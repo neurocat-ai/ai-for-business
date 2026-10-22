@@ -34,7 +34,3 @@ dist/
 .DS_Store
 .idea/
 .vscode/
-
-# Internal evaluation datasets
-data/*/02_cases/audit_sample.csv
-data/*/02_cases/holdout_cases.csv
