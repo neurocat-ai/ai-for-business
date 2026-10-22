@@ -1,0 +1,51 @@
+﻿lead_id,company,company_size,industry,contact_name,contact,source,created_at,current_status
+LEAD-3001,NordLab,85,IT services,Анна,anna@nordlab.example,website,2026-10-01T09:00:00,new
+LEAD-3002,Vector Retail,620,Retail,Михаил,mikhail@vector.example,email,2026-10-01T12:00:00,new
+LEAD-3003,FinBridge,2100,Fintech,Ирина,irina@finbridge.example,partner,2026-10-01T15:00:00,new
+LEAD-3004,MedCore,1300,Healthcare,Сергей,sergey@medcore.example,website,2026-10-01T18:00:00,new
+LEAD-3005,BuildPro,430,Construction,Ольга,olga@buildpro.example,event,2026-10-01T21:00:00,contacted
+LEAD-3006,EduSphere,180,Education,Дмитрий,dmitry@edusphere.example,website,2026-10-02T00:00:00,new
+LEAD-3007,LogiTrack,760,Logistics,Анна,anna@logitrack.example,email,2026-10-02T03:00:00,new
+LEAD-3008,CityHotels,540,Hospitality,Михаил,mikhail@cityhotels.example,partner,2026-10-02T06:00:00,qualified
+LEAD-3009,GreenFarm,95,Agriculture,Ирина,irina@greenfarm.example,website,2026-10-02T09:00:00,new
+LEAD-3010,BrightHR,240,HR tech,Сергей,sergey@brighthr.example,event,2026-10-02T12:00:00,new
+LEAD-3011,NordLab 2,105,IT services,Ольга,lead3011@example.com,partner,2026-10-02T15:00:00,nurture
+LEAD-3012,BrightHR 2,260,HR tech,Дмитрий,lead3012@example.com,event,2026-10-02T18:00:00,qualified
+LEAD-3013,Vector Retail 2,640,Retail,Анна,lead3013@example.com,website,2026-10-02T21:00:00,new
+LEAD-3014,MedCore 2,1320,Healthcare,Михаил,lead3014@example.com,email,2026-10-03T00:00:00,contacted
+LEAD-3015,BuildPro 2,450,Construction,Ирина,lead3015@example.com,partner,2026-10-03T03:00:00,nurture
+LEAD-3016,EduSphere 2,200,Education,Сергей,lead3016@example.com,event,2026-10-03T06:00:00,qualified
+LEAD-3017,LogiTrack 2,780,Logistics,Ольга,lead3017@example.com,website,2026-10-03T09:00:00,new
+LEAD-3018,FinBridge 2,2120,Fintech,Дмитрий,lead3018@example.com,email,2026-10-03T12:00:00,contacted
+LEAD-3019,GreenFarm 2,115,Agriculture,Анна,lead3019@example.com,partner,2026-10-03T15:00:00,nurture
+LEAD-3020,CityHotels 2,560,Hospitality,Михаил,lead3020@example.com,event,2026-10-03T18:00:00,qualified
+LEAD-3021,NordLab 3,125,IT services,Ирина,lead3021@example.com,website,2026-10-03T21:00:00,new
+LEAD-3022,BrightHR 3,280,HR tech,Сергей,lead3022@example.com,email,2026-10-04T00:00:00,contacted
+LEAD-3023,Vector Retail 3,660,Retail,Ольга,lead3023@example.com,partner,2026-10-04T03:00:00,nurture
+LEAD-3024,MedCore 3,1340,Healthcare,Дмитрий,lead3024@example.com,event,2026-10-04T06:00:00,qualified
+LEAD-3025,BuildPro 3,470,Construction,Анна,lead3025@example.com,website,2026-10-04T09:00:00,new
+LEAD-3026,EduSphere 3,220,Education,Михаил,lead3026@example.com,email,2026-10-04T12:00:00,contacted
+LEAD-3027,LogiTrack 3,800,Logistics,Ирина,lead3027@example.com,partner,2026-10-04T15:00:00,nurture
+LEAD-3028,FinBridge 3,2140,Fintech,Сергей,lead3028@example.com,event,2026-10-04T18:00:00,qualified
+LEAD-3029,GreenFarm 3,135,Agriculture,Ольга,lead3029@example.com,website,2026-10-04T21:00:00,new
+LEAD-3030,CityHotels 3,580,Hospitality,Дмитрий,lead3030@example.com,email,2026-10-05T00:00:00,contacted
+LEAD-3031,NordLab 4,145,IT services,Анна,lead3031@example.com,partner,2026-10-05T03:00:00,nurture
+LEAD-3032,BrightHR 4,300,HR tech,Михаил,lead3032@example.com,event,2026-10-05T06:00:00,qualified
+LEAD-3033,Vector Retail 4,680,Retail,Ирина,lead3033@example.com,website,2026-10-05T09:00:00,new
+LEAD-3034,MedCore 4,1360,Healthcare,Сергей,lead3034@example.com,email,2026-10-05T12:00:00,contacted
+LEAD-3035,BuildPro 4,490,Construction,Ольга,lead3035@example.com,partner,2026-10-05T15:00:00,nurture
+LEAD-3036,EduSphere 4,240,Education,Дмитрий,lead3036@example.com,event,2026-10-05T18:00:00,qualified
+LEAD-3037,LogiTrack 4,820,Logistics,Анна,lead3037@example.com,website,2026-10-05T21:00:00,new
+LEAD-3038,Vector Retail East,680,Retail,Ольга,olga@vector-east.example,website,2026-10-06T00:00:00,qualified
+LEAD-3039,GreenFarm 4,155,Agriculture,Ирина,lead3039@example.com,partner,2026-10-06T03:00:00,nurture
+LEAD-3040,CityHotels 4,600,Hospitality,Сергей,lead3040@example.com,event,2026-10-06T06:00:00,qualified
+LEAD-3041,NordLab 5,165,IT services,Ольга,lead3041@example.com,website,2026-10-06T09:00:00,new
+LEAD-3042,MegaHolding,6200,Diversified,Дмитрий,dmitry@megaholding.example,partner,2026-10-06T12:00:00,new
+LEAD-3043,Vector Retail 5,700,Retail,Анна,lead3043@example.com,partner,2026-10-06T15:00:00,nurture
+LEAD-3044,MedCore 5,1380,Healthcare,Михаил,lead3044@example.com,event,2026-10-06T18:00:00,qualified
+LEAD-3045,BuildPro 5,510,Construction,Ирина,lead3045@example.com,website,2026-10-06T21:00:00,new
+LEAD-3046,EduSphere 5,260,Education,Сергей,lead3046@example.com,email,2026-10-07T00:00:00,contacted
+LEAD-3047,LogiTrack 5,840,Logistics,Ольга,lead3047@example.com,partner,2026-10-07T03:00:00,nurture
+LEAD-3048,FinBridge 5,2180,Fintech,Дмитрий,lead3048@example.com,event,2026-10-07T06:00:00,qualified
+LEAD-3049,GreenFarm 5,175,Agriculture,Анна,lead3049@example.com,website,2026-10-07T09:00:00,new
+LEAD-3050,CityHotels 5,620,Hospitality,Михаил,lead3050@example.com,email,2026-10-07T12:00:00,contacted

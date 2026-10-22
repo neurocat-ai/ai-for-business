@@ -1,0 +1,40 @@
+# Secrets and local credentials
+.env
+.env.*
+!.env.example
+*service_account*.json
+*credential*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build and temporary files
+build/
+dist/
+*.egg-info/
+*.log
+*.tmp
+*.temp
+*~
+
+# IDE and operating-system files
+.DS_Store
+.idea/
+.vscode/
+
+# Internal evaluation datasets
+data/*/02_cases/audit_sample.csv
+data/*/02_cases/holdout_cases.csv
