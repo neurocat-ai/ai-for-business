@@ -1,0 +1,7 @@
+﻿request_id,lead_id,company,contact,use_case,preferred_time,comment,created_at,status
+DEMO-2001,LEAD-3016,EduSphere 2,lead3016@example.com,Автоматизация IT-заявок,2026-10-16 11:00,,2026-10-08T10:00:00,scheduled
+DEMO-2002,LEAD-3024,MedCore 3,lead3024@example.com,Согласование закупок,2026-10-17 15:00,,2026-10-09T12:30:00,scheduled
+DEMO-2003,LEAD-3031,NordLab 4,lead3031@example.com,Заявки на оборудование,2026-10-18 10:00,,2026-10-10T09:15:00,completed
+DEMO-2004,LEAD-3038,Vector Retail East,olga@vector-east.example,Согласование закупок и доступов,2026-10-19 14:00,,2026-10-11T11:20:00,scheduled
+DEMO-2005,LEAD-3045,BuildPro 5,lead3045@example.com,Административные заявки,2026-10-20 12:00,,2026-10-11T16:00:00,cancelled
+DEMO-2006,LEAD-3048,FinBridge 5,lead3048@example.com,Enterprise security review,2026-10-21 16:00,,2026-10-12T09:00:00,scheduled
