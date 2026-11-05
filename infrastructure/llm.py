@@ -1,14 +1,52 @@
-from litellm import completion
+import os
+from pathlib import Path
 
-PROVIDER = "ВСТАВЬТЕ_ПРОВАЙДЕРА"
-API_KEY = "ВСТАВЬТЕ_API_КЛЮЧ"
-MODEL = "ВСТАВЬТЕ_МОДЕЛЬ"
+from litellm import completion
+from dotenv import load_dotenv
+
+
+ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT / ".env")
+
+PROVIDER = os.getenv("PROVIDER", "").strip().lower()
+MODEL = os.getenv("MODEL", "").strip()
+API_KEY = os.getenv("API_KEY", "").strip()
 
 
 YANDEX_BASE_URL = "https://ai.api.cloud.yandex.net/v1"
+SUPPORTED_PROVIDERS = {"openai", "anthropic", "yandex"}
+
+
+def _validate_settings():
+    settings = {
+        "PROVIDER": PROVIDER,
+        "MODEL": MODEL,
+        "API_KEY": API_KEY,
+    }
+    missing = [
+        name for name, value in settings.items()
+        if not value
+    ]
+
+    if missing:
+        raise RuntimeError(
+            "Не заданы обязательные настройки LLM: "
+            f"{', '.join(missing)}. "
+            "Заполните .env в корне проекта "
+            "по образцу .env.example."
+        )
+
+    if PROVIDER not in SUPPORTED_PROVIDERS:
+        raise ValueError(
+            "Неподдерживаемый PROVIDER. "
+            "Допустимые значения: "
+            f"{', '.join(sorted(SUPPORTED_PROVIDERS))}."
+        )
 
 
 def complete_messages(messages, tools=None):
+    _validate_settings()
+
     if PROVIDER == "yandex":
         model = f"openai/{MODEL}"
     else:

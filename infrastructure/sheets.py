@@ -1,14 +1,15 @@
+import os
 from pathlib import Path
 
 import gspread
+from dotenv import load_dotenv
 from gspread.exceptions import WorksheetNotFound
 
 
 ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT / ".env")
 
-SPREADSHEET_ID = (
-    "ВСТАВЬТЕ_ID_ТАБЛИЦЫ"
-)
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "").strip()
 
 WORKSHEET_NAMES = {
     "demo": "Demo",
@@ -30,6 +31,14 @@ def get_worksheet(dataset):
         raise ValueError(
             f"Неизвестный кейс Google Sheets: {dataset}"
         ) from error
+
+    if not SPREADSHEET_ID:
+        raise RuntimeError(
+            "Не задана обязательная настройка "
+            "Google Sheets: SPREADSHEET_ID. "
+            "Заполните .env в корне проекта "
+            "по образцу .env.example."
+        )
 
     client = gspread.service_account(
         filename=str(SERVICE_ACCOUNT_FILE)
