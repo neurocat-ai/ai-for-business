@@ -34,6 +34,7 @@ DATASET = "demo"  # demo / training / own
 MAX_TOOL_CALLS = 4
 SEARCH_TOOL_NAME = "search_knowledge_base"
 DEBUG = False
+SIMULATE_TOOL_ERROR = False
 
 
 AGENT_PROMPT = """
@@ -885,6 +886,9 @@ def make_confirmation(arguments):
 
 
 def execute_tool(arguments):
+    if SIMULATE_TOOL_ERROR:
+        return {"status": "tool_error"}
+
     if DATASET == "demo":
         return create_return_request(
             arguments["order_id"],
