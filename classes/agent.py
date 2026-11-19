@@ -11,6 +11,7 @@ from prompt_toolkit.key_binding import KeyBindings
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from classes.rag import (
+    SOURCE_INSTRUCTION,
     build_document_frequencies,
     load_knowledge_base,
     parse_answer_and_sources,
@@ -29,10 +30,62 @@ from infrastructure.sheets import (
 DATASET = "demo"  # demo / training / own
 MAX_TOOL_CALLS = 4
 SEARCH_TOOL_NAME = "search_knowledge_base"
+DEBUG = False
 
 
 AGENT_PROMPT = """
 ВСТАВЬТЕ ПРОМПТ
+"""
+
+
+TOOL_PERMISSION_INSTRUCTION = """
+СЛУЖЕБНАЯ ИНСТРУКЦИЯ ПО РАЗРЕШЕНИЮ ИНСТРУМЕНТОВ:
+Определи исключительно по тексту AGENT_PROMPT, разрешено ли модели использовать каждую категорию инструментов.
+
+- search=true только при наличии в AGENT_PROMPT явной инструкции обращаться к базе знаний.
+- action=true только при наличии в AGENT_PROMPT явной инструкции выполнять внешнее действие с помощью соответствующего инструмента.
+
+Не учитывай текущее обращение, историю диалога и то, выполнены ли условия вызова инструмента: они определяют необходимость и момент вызова, но не доступность инструмента. Само наличие инструмента или описание его возможностей не являются разрешением. Если явной инструкции в AGENT_PROMPT нет, верни false для соответствующей категории.
+
+Верни только JSON-объект без markdown:
+{"search": true, "action": false}
+"""
+
+
+ACTION_EXECUTION_INSTRUCTION = """
+СЛУЖЕБНАЯ ИНСТРУКЦИЯ ПО ВЫПОЛНЕНИЮ ДЕЙСТВИЯ:
+Когда согласно AGENT_PROMPT необходимо создать заявку и для вызова инструмента достаточно данных, вызови предоставленный инструмент создания заявки. Вызов инструмента запускает программную проверку аргументов и формирование запроса подтверждения для клиента. Не имитируй этот этап текстовым ответом и не запрашивай подтверждение самостоятельно. Фактическое действие выполняется Python только после явного подтверждения клиента.
+"""
+
+
+ACTION_VALIDATION_INSTRUCTION = """
+СЛУЖЕБНАЯ ИНСТРУКЦИЯ ПО ПРОВЕРКЕ ДЕЙСТВИЯ:
+Проверь готовность предполагаемого действия к переходу на этап программного подтверждения, а не к фактическому выполнению. Используй исключительно AGENT_PROMPT, историю диалога, текущее сообщение, бизнес-данные и предоставленные документы базы знаний.
+
+Проверь одновременно:
+- достаточно ли подтвержденных данных для действия;
+- выполнены ли условия действия из AGENT_PROMPT и применимых бизнес-правил;
+- нет ли оснований, при которых AGENT_PROMPT или бизнес-правила требуют обязательной эскалации вместо действия;
+- соответствуют ли аргументы действия известным данным.
+
+Не придумывай правила и факты. Отсутствие документов базы знаний само по себе не запрещает действие, если AGENT_PROMPT не требует проверки по ним.
+
+На этом этапе подтверждение клиента еще не запрашивалось. Его отсутствие не является основанием для отказа или уточнения. Если данных достаточно, бизнес-условия соблюдены и действие разрешено, верни decision: "allow". Не запрашивай подтверждение самостоятельно: запрос подтверждения, обработка согласия или отказа и фактическое выполнение действия осуществляются Python после этой проверки.
+
+Верни только JSON-объект без markdown:
+{
+  "decision": "allow",
+  "client_response": "",
+  "used_sources": []
+}
+
+Допустимые значения decision:
+- allow — действие обосновано;
+- clarify — данных недостаточно; client_response содержит конкретный уточняющий вопрос клиенту;
+- escalate — требуется обязательная эскалация; client_response сообщает об этом клиенту;
+- reject — действие не соответствует условиям; client_response кратко объясняет дальнейший шаг.
+
+В used_sources указывай только имена предоставленных документов, на которых непосредственно основано решение. Для allow client_response должен быть пустым. Для остальных решений client_response должен быть готовым ответом клиенту без служебных комментариев.
 """
 
 SUBMIT_BINDINGS = KeyBindings()
@@ -382,7 +435,12 @@ def search_knowledge_base(query, documents=None, frequencies=None):
     }
 
 
-def build_tools(results=None, knowledge_available=False):
+def build_tools(
+    results=None,
+    knowledge_available=False,
+    search_allowed=True,
+    action_allowed=True,
+):
     config = get_case_config()
     results = results or []
 
@@ -404,20 +462,22 @@ def build_tools(results=None, knowledge_available=False):
         }
         required.append("used_sources")
 
-    tools = [{
-        "type": "function",
-        "function": {
-            "name": config["tool_name"],
-            "description": config["tool_description"],
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-                "additionalProperties": False,
+    tools = []
+    if action_allowed:
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": config["tool_name"],
+                "description": config["tool_description"],
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                    "additionalProperties": False,
+                },
             },
-        },
-    }]
-    if knowledge_available:
+        })
+    if search_allowed and knowledge_available:
         tools.append({
             "type": "function",
             "function": {
@@ -490,17 +550,205 @@ def find_business_context(history, user_input):
     return "Бизнес-контекст не настроен."
 
 
-def build_system_prompt(business_context):
+def build_system_prompt(
+    business_context,
+    include_source_instruction=False,
+    include_action_instruction=False,
+):
     scenario_date = (
         ""
         if DATASET == "own"
         else f"Дата учебного сценария: {SCENARIO_DATE}\n\n"
     )
-    return (
+    prompt = (
         f"{AGENT_PROMPT}\n\n"
         f"{scenario_date}"
         f"БИЗНЕС-ДАННЫЕ:\n\n{business_context}"
     )
+    if include_source_instruction:
+        prompt = f"{prompt}\n\n{SOURCE_INSTRUCTION}"
+    if include_action_instruction:
+        prompt = f"{prompt}\n\n{ACTION_EXECUTION_INSTRUCTION}"
+    return prompt
+
+
+def parse_tool_permissions(content):
+    content = (content or "").strip()
+    try:
+        decision = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        json_object = re.search(r"\{.*\}", content, re.DOTALL)
+        try:
+            decision = json.loads(json_object.group(0)) if json_object else {}
+        except (json.JSONDecodeError, TypeError):
+            decision = {}
+
+    if not isinstance(decision, dict):
+        decision = {}
+    return {
+        "search": decision.get("search") is True,
+        "action": decision.get("action") is True,
+    }
+
+
+def decide_tool_permissions():
+    config = get_case_config()
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "AGENT_PROMPT:\n"
+                f"{AGENT_PROMPT}\n\n"
+                f"{TOOL_PERMISSION_INSTRUCTION}\n\n"
+                "Категория search: поиск в базе знаний.\n"
+                "Категория action: "
+                f"{config['tool_description']}"
+            ),
+        },
+    ]
+    response = complete_messages(messages)
+    content = response.choices[0].message.content
+    return parse_tool_permissions(content)
+
+
+def _debug_allowed_tools(permissions):
+    if not DEBUG:
+        return
+    config = get_case_config()
+    allowed_tools = []
+    if permissions["search"]:
+        allowed_tools.append(SEARCH_TOOL_NAME)
+    if permissions["action"]:
+        allowed_tools.append(config["tool_name"])
+    print(
+        "DEBUG | Разрешенные инструменты: "
+        f"{json.dumps(allowed_tools, ensure_ascii=False)}"
+    )
+
+
+def _debug_tool_call(tool_name, arguments):
+    if DEBUG:
+        print(
+            f"DEBUG | Вызов инструмента {tool_name}: "
+            f"{json.dumps(arguments, ensure_ascii=False)}"
+        )
+
+
+def _debug_tool_result(tool_name, result):
+    if DEBUG:
+        print(
+            f"DEBUG | Результат инструмента {tool_name}: "
+            f"{json.dumps(result, ensure_ascii=False)}"
+        )
+
+
+def _debug_action_validation(validation):
+    if DEBUG:
+        print(
+            "DEBUG | Семантическая проверка действия: "
+            f"{json.dumps(validation, ensure_ascii=False)}"
+        )
+
+
+def parse_action_validation(content, results):
+    content = (content or "").strip()
+    try:
+        validation = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        json_object = re.search(r"\{.*\}", content, re.DOTALL)
+        try:
+            validation = json.loads(json_object.group(0)) if json_object else {}
+        except (json.JSONDecodeError, TypeError):
+            validation = {}
+
+    if not isinstance(validation, dict):
+        validation = {}
+
+    decision = validation.get("decision")
+    client_response = validation.get("client_response")
+    raw_sources = validation.get("used_sources")
+    used_sources = _allowed_sources(
+        raw_sources if isinstance(raw_sources, list) else [],
+        results,
+    )
+
+    if decision == "allow":
+        return {
+            "allowed": True,
+            "decision": decision,
+            "client_response": "",
+            "used_sources": used_sources,
+        }
+
+    if (
+        decision in {"clarify", "escalate", "reject"}
+        and isinstance(client_response, str)
+        and client_response.strip()
+    ):
+        return {
+            "allowed": False,
+            "decision": decision,
+            "client_response": client_response.strip(),
+            "used_sources": used_sources,
+        }
+
+    return {
+        "allowed": False,
+        "decision": "invalid",
+        "client_response": (
+            "Не удалось подтвердить обоснованность действия. "
+            "Для продолжения требуется дополнительная проверка специалистом."
+        ),
+        "used_sources": [],
+    }
+
+
+def validate_action_semantics(
+    history,
+    user_input,
+    business_context,
+    results,
+    arguments,
+):
+    config = get_case_config()
+    scenario_date = (
+        ""
+        if DATASET == "own"
+        else f"Дата учебного сценария: {SCENARIO_DATE}\n\n"
+    )
+    found_documents = [
+        {
+            "source": result.get("source", ""),
+            "content": result.get("text", ""),
+        }
+        for result in results
+    ]
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "AGENT_PROMPT:\n"
+                f"{AGENT_PROMPT}\n\n"
+                f"{ACTION_VALIDATION_INSTRUCTION}\n\n"
+                "ПРЕДПОЛАГАЕМОЕ ДЕЙСТВИЕ:\n"
+                f"{config['tool_name']}: {config['tool_description']}\n\n"
+                f"{scenario_date}"
+                "БИЗНЕС-ДАННЫЕ:\n"
+                f"{business_context}\n\n"
+                "НАЙДЕННЫЕ ДОКУМЕНТЫ:\n"
+                f"{json.dumps(found_documents, ensure_ascii=False)}\n\n"
+                "АРГУМЕНТЫ ДЕЙСТВИЯ:\n"
+                f"{json.dumps(arguments, ensure_ascii=False)}"
+            ),
+        },
+        *history,
+        {"role": "user", "content": user_input},
+    ]
+    response = complete_messages(messages)
+    content = response.choices[0].message.content
+    validation = parse_action_validation(content, results)
+    _debug_action_validation(validation)
+    return validation
 
 
 def get_tool_call(message):
@@ -669,11 +917,9 @@ def build_tool_result_answer(tool_result):
 
 
 def _matches_phrase(text, phrases):
-    normalized = text.lower().strip().replace("ё", "е")
-    return any(
-        normalized == phrase or normalized.startswith(phrase + " ")
-        for phrase in phrases
-    )
+    normalized = " ".join(text.lower().replace("ё", "е").split())
+    normalized = normalized.rstrip(".,!?;:…").rstrip()
+    return normalized in phrases
 
 
 def is_yes(text):
@@ -714,6 +960,7 @@ def _handle_pending(user_input, pending, history, config):
 
     arguments = pending["arguments"]
     tool_result = execute_tool(arguments)
+    _debug_tool_result(config["tool_name"], tool_result)
     answer = build_tool_result_answer(tool_result)
     _append_exchange(history, user_input, answer)
     print(f"\nИнструмент: {config['tool_name']}")
@@ -747,6 +994,7 @@ def _print_search_call():
 
 def _append_tool_result(messages, message, tool_call, result, call_number):
     call_id = getattr(tool_call, "id", None) or f"call_{call_number}"
+    _debug_tool_result(tool_call.function.name, result)
     messages.extend([
         {
             "role": "assistant",
@@ -770,9 +1018,18 @@ def _append_tool_result(messages, message, tool_call, result, call_number):
 
 
 def run_agent_turn(history, user_input, documents, frequencies):
+    permissions = decide_tool_permissions()
+    _debug_allowed_tools(permissions)
     business_context = find_business_context(history, user_input)
     messages = [
-        {"role": "system", "content": build_system_prompt(business_context)},
+        {
+            "role": "system",
+            "content": build_system_prompt(
+                business_context,
+                include_source_instruction=permissions["search"],
+                include_action_instruction=permissions["action"],
+            ),
+        },
         *history,
         {"role": "user", "content": user_input},
     ]
@@ -783,7 +1040,12 @@ def run_agent_turn(history, user_input, documents, frequencies):
     for call_number in range(1, MAX_TOOL_CALLS + 1):
         response = complete_messages(
             messages,
-            tools=build_tools(results, knowledge_available),
+            tools=build_tools(
+                results,
+                knowledge_available,
+                search_allowed=permissions["search"],
+                action_allowed=permissions["action"],
+            ),
         )
         message = response.choices[0].message
         tool_call = get_tool_call(message)
@@ -801,13 +1063,29 @@ def run_agent_turn(history, user_input, documents, frequencies):
         try:
             tool_name, arguments = _parse_function_call(tool_call)
         except (json.JSONDecodeError, TypeError, ValueError) as error:
+            _debug_tool_call(
+                getattr(tool_call.function, "name", "unknown"),
+                getattr(tool_call.function, "arguments", None),
+            )
             result = {"status": "invalid_arguments", "error": str(error)}
             _append_tool_result(
                 messages, message, tool_call, result, call_number,
             )
             continue
 
+        _debug_tool_call(tool_name, arguments)
+
         if tool_name == SEARCH_TOOL_NAME:
+            if not permissions["search"]:
+                result = {
+                    "status": "tool_not_allowed",
+                    "tool": tool_name,
+                }
+                _append_tool_result(
+                    messages, message, tool_call, result, call_number,
+                )
+                continue
+
             search_attempted = True
             search_result = search_knowledge_base(
                 arguments.get("query", ""),
@@ -823,6 +1101,16 @@ def run_agent_turn(history, user_input, documents, frequencies):
 
         if tool_name != get_case_config()["tool_name"]:
             result = {"status": "unknown_tool", "tool": tool_name}
+            _append_tool_result(
+                messages, message, tool_call, result, call_number,
+            )
+            continue
+
+        if not permissions["action"]:
+            result = {
+                "status": "tool_not_allowed",
+                "tool": tool_name,
+            }
             _append_tool_result(
                 messages, message, tool_call, result, call_number,
             )
@@ -853,6 +1141,25 @@ def run_agent_turn(history, user_input, documents, frequencies):
                 messages, message, tool_call, result, call_number,
             )
             continue
+
+        semantic_validation = validate_action_semantics(
+            history,
+            user_input,
+            business_context,
+            results,
+            validated,
+        )
+        if not semantic_validation["allowed"]:
+            return {
+                "type": "answer",
+                "answer": semantic_validation["client_response"],
+                "used_sources": semantic_validation["used_sources"],
+            }
+
+        _debug_tool_result(tool_name, {
+            "status": "awaiting_confirmation",
+            "arguments": validated,
+        })
         return {"type": "action", "arguments": validated}
 
     return {
