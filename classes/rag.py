@@ -18,6 +18,7 @@ DATASET = "demo"  # demo, training или own
 
 TOP_K = 5
 MIN_SCORE = 1.5
+DEBUG = False
 
 
 RAG_PROMPT = """
@@ -35,6 +36,19 @@ def submit_message(event):
 SOURCE_INSTRUCTION = """
 СЛУЖЕБНАЯ ИНСТРУКЦИЯ ПО ИСТОЧНИКАМ:
 В конце ответа добавь строку USED_SOURCES в формате JSON-массива имен файлов. Указывай только документы, непосредственно подтверждающие конкретные факты ответа. Не включай документ только из-за его присутствия в контексте. Если несколько документов подтверждают один факт, выбери наиболее профильный и не дублируй источники без необходимости. Если документы не использованы, верни USED_SOURCES: [].
+"""
+
+
+SEARCH_DECISION_INSTRUCTION = """
+СЛУЖЕБНАЯ ИНСТРУКЦИЯ ПО ВЫБОРУ ПОИСКА:
+Поиск в базе знаний разрешен только в том случае, если RAG_PROMPT содержит явную инструкцию обращаться к базе знаний и условия этой инструкции выполнены для текущего обращения с учетом истории диалога. Общие требования к достоверности, ограничениям ответа или достаточности информации сами по себе не являются разрешением на поиск. Если явной инструкции обращаться к базе знаний нет, верни search=false.
+
+Верни только JSON-объект без markdown:
+{"search": true, "query": "краткий самодостаточный поисковый запрос", "sources": ["имя_файла.md"]}
+или
+{"search": false, "query": "", "sources": []}
+
+Определяй sources на основании RAG_PROMPT, текущего обращения и истории диалога. Указывай точные имена целевых файлов. Если ограничивать поиск конкретными документами не нужно, верни пустой список sources.
 """
 
 
@@ -146,6 +160,73 @@ def build_search_query(history, user_input):
     return "\n".join(previous[-2:] + [user_input])
 
 
+def parse_search_decision(content, history, user_input):
+    content = (content or "").strip()
+    try:
+        decision = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        json_object = re.search(r"\{.*\}", content, re.DOTALL)
+        try:
+            decision = json.loads(json_object.group(0)) if json_object else {}
+        except (json.JSONDecodeError, TypeError):
+            decision = {}
+
+    if not isinstance(decision, dict):
+        return False, "", []
+
+    sources = decision.get("sources", [])
+    if not isinstance(sources, list):
+        sources = []
+    target_sources = []
+    for source in sources:
+        if (
+            isinstance(source, str)
+            and source.strip()
+            and source.strip() not in target_sources
+        ):
+            target_sources.append(source.strip())
+
+    if decision.get("search") is not True:
+        return False, "", target_sources
+
+    query = decision.get("query")
+    if not isinstance(query, str) or not query.strip():
+        query = build_search_query(history, user_input)
+    return True, query.strip(), target_sources
+
+
+def decide_search(history, user_input):
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "RAG_PROMPT:\n"
+                f"{RAG_PROMPT}\n\n{SEARCH_DECISION_INSTRUCTION}"
+            ),
+        },
+        *history,
+        {"role": "user", "content": user_input},
+    ]
+    response = ask_messages(messages)
+    return parse_search_decision(response, history, user_input)
+
+
+def select_search_documents(documents, target_sources):
+    if not target_sources:
+        return documents, []
+
+    available_sources = {document["source"] for document in documents}
+    selected_documents = [
+        document for document in documents
+        if document["source"] in target_sources
+    ]
+    missing_sources = [
+        source for source in target_sources
+        if source not in available_sources
+    ]
+    return selected_documents, missing_sources
+
+
 def build_knowledge_context(results):
     if not results:
         return "Для текущего сообщения релевантная информация в базе знаний не найдена."
@@ -155,7 +236,7 @@ def build_knowledge_context(results):
     )
 
 
-def parse_answer_and_sources(content, results):
+def parse_answer_and_reported_sources(content):
     content = (content or "Не удалось подготовить ответ.").rstrip()
     source_line = re.search(
         r"(?:^|\n)[ \t]*USED_SOURCES:[ \t]*(.*?)[ \t]*\Z",
@@ -171,17 +252,71 @@ def parse_answer_and_sources(content, results):
         parsed_sources = []
     if not isinstance(parsed_sources, list):
         parsed_sources = []
+    return answer, parsed_sources
 
+
+def validate_sources(reported_sources, results):
     available_sources = {result["source"] for result in results}
     used_sources = []
-    for source in parsed_sources:
+    for source in reported_sources:
         if (
             isinstance(source, str)
             and source in available_sources
             and source not in used_sources
         ):
             used_sources.append(source)
-    return answer, used_sources
+    return used_sources
+
+
+def parse_answer_and_sources(content, results):
+    answer, reported_sources = parse_answer_and_reported_sources(content)
+    return answer, validate_sources(reported_sources, results)
+
+
+def print_debug_info(
+    search_performed,
+    search_query,
+    target_sources,
+    missing_sources,
+    results,
+    reported_sources,
+    used_sources,
+):
+    print("\nDEBUG:")
+    if search_performed:
+        print("Поиск: выполнен")
+        print(
+            "Поисковый запрос: "
+            f"{json.dumps(search_query, ensure_ascii=False)}"
+        )
+        print(
+            "Целевые документы: "
+            f"{json.dumps(target_sources, ensure_ascii=False)}"
+        )
+        if missing_sources:
+            print(
+                "Целевые документы не найдены: "
+                f"{json.dumps(missing_sources, ensure_ascii=False)}"
+            )
+        found_sources = [result["source"] for result in results]
+        print(
+            "Найденные документы: "
+            f"{json.dumps(found_sources, ensure_ascii=False)}"
+        )
+    else:
+        print("Поиск: не выполнялся")
+        print("Поисковый запрос: не сформирован")
+        print("Целевые документы: поиск не выполнялся")
+        print("Найденные документы: поиск не выполнялся")
+
+    print(
+        "Источники, указанные моделью: "
+        f"{json.dumps(reported_sources, ensure_ascii=False)}"
+    )
+    print(
+        "Использованные источники после проверки: "
+        f"{json.dumps(used_sources, ensure_ascii=False)}"
+    )
 
 
 def main():
@@ -215,22 +350,49 @@ def main():
         if not user_input.strip():
             continue
 
-        search_query = build_search_query(history, user_input)
-        results = retrieve(search_query, documents, frequencies)
-        knowledge_context = build_knowledge_context(results)
-        system_prompt = (
-            f"{RAG_PROMPT}\n\n{SOURCE_INSTRUCTION}\n\n"
-            "БАЗА ЗНАНИЙ ДЛЯ ТЕКУЩЕГО СООБЩЕНИЯ:\n\n"
-            f"{knowledge_context}"
+        search_performed, search_query, target_sources = decide_search(
+            history,
+            user_input,
         )
+        results = []
+        missing_sources = []
+
+        if search_performed:
+            search_documents, missing_sources = select_search_documents(
+                documents,
+                target_sources,
+            )
+            search_frequencies = frequencies
+            if target_sources:
+                search_frequencies = build_document_frequencies(
+                    search_documents
+                )
+            results = retrieve(
+                search_query,
+                search_documents,
+                search_frequencies,
+            )
+
+        system_prompt_parts = [RAG_PROMPT, SOURCE_INSTRUCTION]
+        if search_performed:
+            knowledge_context = build_knowledge_context(results)
+            system_prompt_parts.append(
+                "БАЗА ЗНАНИЙ ДЛЯ ТЕКУЩЕГО СООБЩЕНИЯ:\n\n"
+                f"{knowledge_context}"
+            )
+
         messages = [
-            {"role": "system", "content": system_prompt},
+            {
+                "role": "system",
+                "content": "\n\n".join(system_prompt_parts),
+            },
             *history,
             {"role": "user", "content": user_input},
         ]
-
         response = ask_messages(messages)
-        answer, used_sources = parse_answer_and_sources(response, results)
+        answer, reported_sources = parse_answer_and_reported_sources(response)
+        used_sources = validate_sources(reported_sources, results)
+
         history.extend([
             {"role": "user", "content": user_input},
             {"role": "assistant", "content": answer},
@@ -239,6 +401,16 @@ def main():
         print(f"\nИИ:\n{answer}")
         if used_sources:
             print(f"\nИспользованные источники: {', '.join(used_sources)}")
+        if DEBUG:
+            print_debug_info(
+                search_performed,
+                search_query,
+                target_sources,
+                missing_sources,
+                results,
+                reported_sources,
+                used_sources,
+            )
         print()
 
 
