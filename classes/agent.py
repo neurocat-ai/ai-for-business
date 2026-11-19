@@ -11,10 +11,12 @@ from prompt_toolkit.key_binding import KeyBindings
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from classes.rag import (
+    DATASET_TITLES,
     SOURCE_INSTRUCTION,
     build_document_frequencies,
     load_knowledge_base,
     parse_answer_and_sources,
+    print_startup_header,
     retrieve,
     select_search_documents,
 )
@@ -145,7 +147,7 @@ TOOL_PROPERTIES = {
 CASE_CONFIGS = {
     "demo": {
         "dataset": "demo",
-        "title": "Demo: возвраты интернет-магазина",
+        "title": DATASET_TITLES["demo"],
         "tool_name": "create_return_request",
         "tool_description": "Зарегистрировать заявку на разбор возврата или проблемного заказа.",
         "business_file": DEMO_ORDERS_FILE,
@@ -177,7 +179,7 @@ CASE_CONFIGS = {
     },
     "training": {
         "dataset": "training",
-        "title": "Training: заявки на демо FlowOffice",
+        "title": DATASET_TITLES["training"],
         "tool_name": "create_demo_request",
         "tool_description": "Зарегистрировать заявку на проведение демо.",
         "business_file": TRAINING_LEADS_FILE,
@@ -213,7 +215,7 @@ CASE_CONFIGS = {
     },
     "own": {
         "dataset": "own",
-        "title": "Own: собственный сценарий",
+        "title": DATASET_TITLES["own"],
         "tool_name": "create_own_request",
         "tool_description": "Зарегистрировать заявку собственного бизнес-сценария.",
         "business_file": None,
@@ -1007,6 +1009,15 @@ def _print_sources(sources):
         print("\nОснование: " + ", ".join(sources))
 
 
+def _print_answer(answer, sources=None, response_started=False):
+    if response_started:
+        print(f"\n{answer}")
+    else:
+        print(f"\nИИ:\n{answer}")
+    _print_sources(sources or [])
+    print()
+
+
 def _handle_pending(user_input, pending, history, config):
     if is_no(user_input):
         answer = "Хорошо, действие отменено."
@@ -1026,10 +1037,12 @@ def _handle_pending(user_input, pending, history, config):
     _debug_tool_result(config["tool_name"], tool_result)
     answer = build_tool_result_answer(tool_result)
     _append_exchange(history, user_input, answer)
-    print(f"\nИнструмент: {config['tool_name']}")
-    print(f"\nИИ:\n{answer}")
-    _print_sources(arguments.get("used_sources", []))
-    print()
+    _print_tool_call(config["tool_name"], response_started=False)
+    _print_answer(
+        answer,
+        arguments.get("used_sources", []),
+        response_started=True,
+    )
     return None
 
 
@@ -1051,8 +1064,11 @@ def _merge_results(current, new):
     return merged
 
 
-def _print_search_call():
-    print(f"Инструмент: {SEARCH_TOOL_NAME}")
+def _print_tool_call(tool_name, response_started):
+    if not response_started:
+        print("\nИИ:")
+    print(f"Инструмент: {tool_name}")
+    return True
 
 
 def _append_tool_result(messages, message, tool_call, result, call_number):
@@ -1098,6 +1114,7 @@ def run_agent_turn(history, user_input, documents, frequencies):
     ]
     knowledge_available = bool(documents)
     search_attempted = False
+    response_started = False
     results = []
 
     for call_number in range(1, MAX_TOOL_CALLS + 1):
@@ -1121,13 +1138,19 @@ def run_agent_turn(history, user_input, documents, frequencies):
                 "type": "answer",
                 "answer": answer,
                 "used_sources": used_sources,
+                "response_started": response_started,
             }
 
         try:
             tool_name, arguments = _parse_function_call(tool_call)
         except (json.JSONDecodeError, TypeError, ValueError) as error:
+            tool_name = getattr(tool_call.function, "name", "unknown")
+            response_started = _print_tool_call(
+                tool_name,
+                response_started,
+            )
             _debug_tool_call(
-                getattr(tool_call.function, "name", "unknown"),
+                tool_name,
                 getattr(tool_call.function, "arguments", None),
             )
             result = {"status": "invalid_arguments", "error": str(error)}
@@ -1136,6 +1159,7 @@ def run_agent_turn(history, user_input, documents, frequencies):
             )
             continue
 
+        response_started = _print_tool_call(tool_name, response_started)
         _debug_tool_call(tool_name, arguments)
 
         if tool_name == SEARCH_TOOL_NAME:
@@ -1156,7 +1180,6 @@ def run_agent_turn(history, user_input, documents, frequencies):
                 frequencies,
                 sources=arguments.get("sources"),
             )
-            _print_search_call()
             _debug_search_scope(search_result)
             results = _merge_results(results, search_result["results"])
             _append_tool_result(
@@ -1219,13 +1242,18 @@ def run_agent_turn(history, user_input, documents, frequencies):
                 "type": "answer",
                 "answer": semantic_validation["client_response"],
                 "used_sources": semantic_validation["used_sources"],
+                "response_started": response_started,
             }
 
         _debug_tool_result(tool_name, {
             "status": "awaiting_confirmation",
             "arguments": validated,
         })
-        return {"type": "action", "arguments": validated}
+        return {
+            "type": "action",
+            "arguments": validated,
+            "response_started": response_started,
+        }
 
     return {
         "type": "answer",
@@ -1234,6 +1262,7 @@ def run_agent_turn(history, user_input, documents, frequencies):
             "последовательных вызовов инструментов."
         ),
         "used_sources": [],
+        "response_started": response_started,
     }
 
 
@@ -1244,8 +1273,7 @@ def main():
 
     history = []
     pending = None
-    print("Agent запущен.")
-    print(f"Кейс: {config['title']}.")
+    print_startup_header("Agent", DATASET)
     if documents:
         print(f"База знаний: {len(documents)} файлов.")
     else:
@@ -1289,16 +1317,21 @@ def main():
             answer = turn["answer"]
             used_sources = turn["used_sources"]
             _append_exchange(history, user_input, answer)
-            print(f"\nИИ:\n{answer}")
-            _print_sources(used_sources)
-            print()
+            _print_answer(
+                answer,
+                used_sources,
+                response_started=turn.get("response_started", False),
+            )
             continue
 
         arguments = turn["arguments"]
         confirmation = make_confirmation(arguments)
         _append_exchange(history, user_input, confirmation)
         pending = {"arguments": arguments}
-        print(f"\nИИ:\n{confirmation}\n")
+        _print_answer(
+            confirmation,
+            response_started=turn.get("response_started", False),
+        )
 
 
 if __name__ == "__main__":

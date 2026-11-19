@@ -15,10 +15,20 @@ from infrastructure.llm import ask_messages
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASET = "demo"  # demo, training или own
+DATASET_TITLES = {
+    "demo": "Demo: Клиентская поддержка интернет-магазина",
+    "training": "Training: Продажа онлайн-сервиса",
+    "own": "Own: Собственный кейс",
+}
 
 TOP_K = 5
 MIN_SCORE = 1.5
 DEBUG = False
+
+
+def print_startup_header(tool_name, dataset):
+    print(f"{tool_name} запущен.")
+    print(DATASET_TITLES[dataset])
 
 
 RAG_PROMPT = """
@@ -103,6 +113,12 @@ def get_knowledge_base_dir(dataset=None):
     return ROOT / "data" / selected_dataset / "03_knowledge_base"
 
 
+class EmptyKnowledgeBaseError(RuntimeError):
+    def __init__(self, knowledge_base_dir):
+        self.knowledge_base_dir = knowledge_base_dir
+        super().__init__(f"В папке {knowledge_base_dir} нет .md-файлов")
+
+
 def load_knowledge_base(dataset=None):
     knowledge_base_dir = get_knowledge_base_dir(dataset)
     if not knowledge_base_dir.exists():
@@ -118,7 +134,7 @@ def load_knowledge_base(dataset=None):
         })
 
     if not documents:
-        raise RuntimeError(f"В папке {knowledge_base_dir} нет .md-файлов")
+        raise EmptyKnowledgeBaseError(knowledge_base_dir)
     return documents
 
 
@@ -320,11 +336,18 @@ def print_debug_info(
 
 def main():
     clear_terminal()
-    documents = load_knowledge_base()
+    try:
+        documents = load_knowledge_base()
+    except EmptyKnowledgeBaseError as error:
+        print(
+            "База знаний пуста. Добавьте хотя бы один .md-файл "
+            f"в папку {error.knowledge_base_dir} и повторите запуск."
+        )
+        return
     frequencies = build_document_frequencies(documents)
     history = []
 
-    print("RAG запущен.")
+    print_startup_header("RAG", DATASET)
     print(f"База знаний: {len(documents)} файлов.")
     print(
         "Вставьте сообщение или историю переписки "
