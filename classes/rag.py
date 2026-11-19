@@ -5,6 +5,9 @@ import math
 import re
 import sys
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.key_binding import KeyBindings
+
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from infrastructure.llm import ask_messages
@@ -20,6 +23,13 @@ MIN_SCORE = 1.5
 RAG_PROMPT = """
 ВСТАВЬТЕ ПРОМПТ
 """
+
+SUBMIT_BINDINGS = KeyBindings()
+
+
+@SUBMIT_BINDINGS.add("enter")
+def submit_message(event):
+    event.current_buffer.validate_and_handle()
 
 
 SOURCE_INSTRUCTION = """
@@ -182,18 +192,27 @@ def main():
 
     print("RAG запущен.")
     print(f"База знаний: {len(documents)} файлов.")
-    print("Введите сообщение. Для выхода используйте /exit.\n")
+    print(
+        "Вставьте сообщение или историю переписки "
+        "и нажмите Enter для отправки. "
+        "Для выхода используйте /exit.\n"
+    )
+
+    session = PromptSession(
+        multiline=True,
+        key_bindings=SUBMIT_BINDINGS,
+    )
 
     while True:
         try:
-            user_input = input("Вы: ").strip()
+            user_input = session.prompt("Вы:\n")
         except KeyboardInterrupt:
             print()
             break
 
-        if user_input.lower() == "/exit":
+        if user_input.strip().lower() == "/exit":
             break
-        if not user_input:
+        if not user_input.strip():
             continue
 
         search_query = build_search_query(history, user_input)
@@ -217,7 +236,7 @@ def main():
             {"role": "assistant", "content": answer},
         ])
 
-        print(f"\nИИ: {answer}")
+        print(f"\nИИ:\n{answer}")
         if used_sources:
             print(f"\nИспользованные источники: {', '.join(used_sources)}")
         print()
