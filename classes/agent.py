@@ -16,6 +16,7 @@ from classes.rag import (
     load_knowledge_base,
     parse_answer_and_sources,
     retrieve,
+    select_search_documents,
 )
 from infrastructure.llm import complete_messages
 from infrastructure.sheets import (
@@ -420,18 +421,49 @@ def reset_requests(dataset=None):
         return {"status": "tool_error", "error": str(error)}
 
 
-def search_knowledge_base(query, documents=None, frequencies=None):
-    query = str(query or "").strip()
-    if not query:
-        return {"query": "", "results": []}
+def _normalize_target_sources(sources):
+    if not isinstance(sources, list):
+        return []
+    normalized = []
+    for source in sources:
+        if (
+            isinstance(source, str)
+            and source.strip()
+            and source.strip() not in normalized
+        ):
+            normalized.append(source.strip())
+    return normalized
 
+
+def search_knowledge_base(
+    query,
+    documents=None,
+    frequencies=None,
+    sources=None,
+):
+    query = str(query or "").strip()
     if documents is None:
         documents = load_knowledge_base(DATASET)
     if frequencies is None:
         frequencies = build_document_frequencies(documents)
+
+    target_sources = _normalize_target_sources(sources)
+    search_documents, missing_sources = select_search_documents(
+        documents,
+        target_sources,
+    )
+    search_frequencies = frequencies
+    if target_sources:
+        search_frequencies = build_document_frequencies(search_documents)
+
     return {
         "query": query,
-        "results": retrieve(query, documents, frequencies),
+        "sources": target_sources,
+        "missing_sources": missing_sources,
+        "results": (
+            retrieve(query, search_documents, search_frequencies)
+            if query else []
+        ),
     }
 
 
@@ -492,6 +524,16 @@ def build_tools(
                         "query": {
                             "type": "string",
                             "description": "Поисковый запрос к базе знаний.",
+                        },
+                        "sources": {
+                            "type": "array",
+                            "description": (
+                                "Необязательный список точных имен файлов, "
+                                "по которым нужно ограничить поиск. Пустой "
+                                "список означает поиск по всей базе знаний."
+                            ),
+                            "items": {"type": "string"},
+                            "uniqueItems": True,
                         },
                     },
                     "required": ["query"],
@@ -648,6 +690,27 @@ def _debug_action_validation(validation):
             "DEBUG | Семантическая проверка действия: "
             f"{json.dumps(validation, ensure_ascii=False)}"
         )
+
+
+def _debug_search_scope(search_result):
+    if not DEBUG:
+        return
+    found_sources = [
+        result["source"]
+        for result in search_result.get("results", [])
+    ]
+    print(
+        "DEBUG | Запрошенные источники: "
+        f"{json.dumps(search_result.get('sources', []), ensure_ascii=False)}"
+    )
+    print(
+        "DEBUG | Отсутствующие источники: "
+        f"{json.dumps(search_result.get('missing_sources', []), ensure_ascii=False)}"
+    )
+    print(
+        "DEBUG | Найденные источники: "
+        f"{json.dumps(found_sources, ensure_ascii=False)}"
+    )
 
 
 def parse_action_validation(content, results):
@@ -1091,8 +1154,10 @@ def run_agent_turn(history, user_input, documents, frequencies):
                 arguments.get("query", ""),
                 documents,
                 frequencies,
+                sources=arguments.get("sources"),
             )
             _print_search_call()
+            _debug_search_scope(search_result)
             results = _merge_results(results, search_result["results"])
             _append_tool_result(
                 messages, message, tool_call, search_result, call_number,
