@@ -238,16 +238,15 @@ def build_knowledge_context(results):
 
 def parse_answer_and_reported_sources(content):
     content = (content or "Не удалось подготовить ответ.").rstrip()
-    source_line = re.search(
-        r"(?:^|\n)[ \t]*USED_SOURCES:[ \t]*(.*?)[ \t]*\Z",
-        content,
-    )
-    if not source_line:
+    marker = "USED_SOURCES:"
+    marker_index = content.rfind(marker)
+    if marker_index == -1:
         return content.strip(), []
 
-    answer = content[:source_line.start()].strip()
+    answer = content[:marker_index].strip()
+    source_block = content[marker_index + len(marker):].strip()
     try:
-        parsed_sources = json.loads(source_line.group(1))
+        parsed_sources = json.loads(source_block)
     except (json.JSONDecodeError, TypeError):
         parsed_sources = []
     if not isinstance(parsed_sources, list):
