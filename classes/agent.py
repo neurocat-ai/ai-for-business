@@ -5,6 +5,9 @@ import json
 import re
 import sys
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.key_binding import KeyBindings
+
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from classes.rag import (
@@ -31,6 +34,13 @@ SEARCH_TOOL_NAME = "search_knowledge_base"
 AGENT_PROMPT = """
 ВСТАВЬТЕ ПРОМПТ
 """
+
+SUBMIT_BINDINGS = KeyBindings()
+
+
+@SUBMIT_BINDINGS.add("enter")
+def submit_message(event):
+    event.current_buffer.validate_and_handle()
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -692,12 +702,12 @@ def _handle_pending(user_input, pending, history, config):
     if is_no(user_input):
         answer = "Хорошо, действие отменено."
         _append_exchange(history, user_input, answer)
-        print(f"\nИИ: {answer}\n")
+        print(f"\nИИ:\n{answer}\n")
         return None
 
     if not is_yes(user_input):
         print(
-            "\nИИ: Перед выполнением действия нужно подтверждение. "
+            "\nИИ:\nПеред выполнением действия нужно подтверждение. "
             "Ответьте да или нет.\n"
         )
         return pending
@@ -707,7 +717,7 @@ def _handle_pending(user_input, pending, history, config):
     answer = build_tool_result_answer(tool_result)
     _append_exchange(history, user_input, answer)
     print(f"\nИнструмент: {config['tool_name']}")
-    print(f"\nИИ: {answer}")
+    print(f"\nИИ:\n{answer}")
     _print_sources(arguments.get("used_sources", []))
     print()
     return None
@@ -868,18 +878,30 @@ def main():
         print(f"База знаний: {len(documents)} файлов.")
     else:
         print("База знаний: не подключена.")
-    print("Введите сообщение. Для выхода используйте /exit.\n")
+    print(
+        "Вставьте сообщение или историю переписки "
+        "и нажмите Enter для отправки. "
+        "Для выхода используйте /exit.\n"
+    )
+
+    session = PromptSession(
+        multiline=True,
+        key_bindings=SUBMIT_BINDINGS,
+    )
 
     while True:
         try:
-            user_input = input("Вы: ").strip()
+            if pending:
+                user_input = input("Вы: ").strip()
+            else:
+                user_input = session.prompt("Вы:\n")
         except KeyboardInterrupt:
             print()
             break
 
-        if user_input.lower() == "/exit":
+        if user_input.strip().lower() == "/exit":
             break
-        if not user_input:
+        if not user_input.strip():
             continue
         if pending:
             pending = _handle_pending(user_input, pending, history, config)
@@ -895,7 +917,7 @@ def main():
             answer = turn["answer"]
             used_sources = turn["used_sources"]
             _append_exchange(history, user_input, answer)
-            print(f"\nИИ: {answer}")
+            print(f"\nИИ:\n{answer}")
             _print_sources(used_sources)
             print()
             continue
@@ -904,7 +926,7 @@ def main():
         confirmation = make_confirmation(arguments)
         _append_exchange(history, user_input, confirmation)
         pending = {"arguments": arguments}
-        print(f"\nИИ: {confirmation}\n")
+        print(f"\nИИ:\n{confirmation}\n")
 
 
 if __name__ == "__main__":
