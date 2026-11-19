@@ -1,6 +1,9 @@
 from pathlib import Path
 import sys
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.key_binding import KeyBindings
+
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from infrastructure.llm import ask_messages
@@ -9,6 +12,13 @@ from infrastructure.llm import ask_messages
 PROMPT = """
 ВСТАВЬТЕ ПРОМПТ
 """
+
+SUBMIT_BINDINGS = KeyBindings()
+
+
+@SUBMIT_BINDINGS.add("enter")
+def submit_message(event):
+    event.current_buffer.validate_and_handle()
 
 
 def clear_terminal():
@@ -26,19 +36,28 @@ def main():
     ]
 
     print("Prompt-tool запущен.")
-    print("Введите сообщение. Для выхода используйте /exit.\n")
+    print(
+        "Вставьте сообщение или историю переписки "
+        "и нажмите Enter для отправки. "
+        "Для выхода используйте /exit.\n"
+    )
+
+    session = PromptSession(
+        multiline=True,
+        key_bindings=SUBMIT_BINDINGS,
+    )
 
     while True:
         try:
-            user_input = input("Вы: ").strip()
+            user_input = session.prompt("Вы:\n")
         except KeyboardInterrupt:
             print()
             break
 
-        if user_input.lower() == "/exit":
+        if user_input.strip().lower() == "/exit":
             break
 
-        if not user_input:
+        if not user_input.strip():
             continue
 
         messages.append({
@@ -53,7 +72,7 @@ def main():
             "content": response
         })
 
-        print(f"\nИИ: {response}\n")
+        print(f"\nИИ:\n{response}\n")
 
 
 if __name__ == "__main__":
