@@ -63,6 +63,7 @@ def complete_messages(messages, tools=None):
 
     if tools:
         params["tools"] = tools
+        params["parallel_tool_calls"] = False
 
         if PROVIDER == "openai":
             params["reasoning_effort"] = "none"

@@ -1553,6 +1553,17 @@ def run_agent_turn(history, user_input, documents, frequencies):
             ),
         )
         message = response.choices[0].message
+        tool_calls = getattr(message, "tool_calls", None) or []
+        if len(tool_calls) > 1:
+            return {
+                "type": "answer",
+                "answer": (
+                    "Не удалось безопасно обработать запрос. "
+                    "Повторите попытку."
+                ),
+                "used_sources": [],
+                "response_started": response_started,
+            }
         tool_call = get_tool_call(message)
         if not tool_call:
             answer, used_sources = parse_answer_and_sources(
