@@ -35,6 +35,7 @@ MAX_TOOL_CALLS = 4
 SEARCH_TOOL_NAME = "search_knowledge_base"
 DEBUG = False
 SIMULATE_TOOL_ERROR = False
+ENABLE_LEAD_MATCHING = False
 
 
 AGENT_PROMPT = """
@@ -62,6 +63,14 @@ ACTION_EXECUTION_INSTRUCTION = """
 """
 
 
+CLIENT_RESPONSE_INSTRUCTION = """
+СЛУЖЕБНАЯ ИНСТРУКЦИЯ ПО ОТВЕТУ КЛИЕНТУ:
+Не раскрывай внутренний lead_id, устройство CRM и результат программного сопоставления. Если нужны сведения клиента, задавай обычный вопрос только о конкретно недостающем имени, компании или email. Не запрашивай повторно сведения, уже известные из текущего обращения, истории или бизнес-данных.
+
+Применяй условия из документов базы знаний буквально. Не расширяй числовые пороги и другие условия на случаи, которые им не соответствуют. Не утверждай, что обращение будет или уже передано менеджеру либо специалисту, если такого инструмента нет и передача фактически не выполнялась. Можно сообщить только, что для продолжения требуется участие специалиста.
+"""
+
+
 ACTION_VALIDATION_INSTRUCTION = """
 СЛУЖЕБНАЯ ИНСТРУКЦИЯ ПО ПРОВЕРКЕ ДЕЙСТВИЯ:
 Проверь готовность предполагаемого действия к переходу на этап программного подтверждения, а не к фактическому выполнению. Используй исключительно AGENT_PROMPT, историю диалога, текущее сообщение, бизнес-данные и предоставленные документы базы знаний.
@@ -73,6 +82,7 @@ ACTION_VALIDATION_INSTRUCTION = """
 - соответствуют ли аргументы действия известным данным.
 
 Не придумывай правила и факты. Отсутствие документов базы знаний само по себе не запрещает действие, если AGENT_PROMPT не требует проверки по ним.
+Применяй каждое условие из документов буквально: числовой порог считается выполненным только при фактическом соответствии указанному сравнению. Не заменяй точное условие более широким предположением.
 
 На этом этапе подтверждение клиента еще не запрашивалось. Его отсутствие не является основанием для отказа или уточнения. Если данных достаточно, бизнес-условия соблюдены и действие разрешено, верни decision: "allow". Не запрашивай подтверждение самостоятельно: запрос подтверждения, обработка согласия или отказа и фактическое выполнение действия осуществляются Python после этой проверки.
 
@@ -89,7 +99,7 @@ ACTION_VALIDATION_INSTRUCTION = """
 - escalate — требуется обязательная эскалация; client_response сообщает об этом клиенту;
 - reject — действие не соответствует условиям; client_response кратко объясняет дальнейший шаг.
 
-В used_sources указывай только имена предоставленных документов, на которых непосредственно основано решение. Для allow client_response должен быть пустым. Для остальных решений client_response должен быть готовым ответом клиенту без служебных комментариев.
+В used_sources указывай только имена предоставленных документов, на которых непосредственно основано решение. Для allow client_response должен быть пустым. Для остальных решений client_response должен быть готовым ответом клиенту без служебных комментариев. Не утверждай, что обращение будет или уже передано менеджеру либо специалисту: программного инструмента передачи нет. При необходимости сообщи только, что для продолжения требуется участие специалиста.
 """
 
 SUBMIT_BINDINGS = KeyBindings()
@@ -156,8 +166,8 @@ CASE_CONFIGS = {
         "seed_file": DEMO_SEED_FILE,
         "headers": DEMO_HEADERS,
         "request_fields": ("order_id", "item", "reason", "comment"),
-        "required_fields": ("order_id", "item", "reason", "comment"),
-        "optional_fields": (),
+        "required_fields": ("order_id", "item", "reason"),
+        "optional_fields": ("comment",),
         "uppercase_fields": (),
         "not_found_status": "invalid_order",
         "missing_field_in_result": False,
@@ -201,8 +211,8 @@ CASE_CONFIGS = {
         "active_statuses": {"requested", "scheduled"},
         "created_status": "requested",
         "id_pattern": r"(?i)(?<![a-z0-9])LEAD-\d+(?![a-z0-9])",
-        "context_missing": "ID лида пока не определен.",
-        "context_not_found": "Дополнительные данные лида не найдены.",
+        "context_missing": "Запись клиента в CRM пока не определена.",
+        "context_not_found": "Запись клиента в CRM не найдена по указанным данным.",
         "context_fields": (
             "lead_id", "company", "company_size", "industry",
             "contact_name", "contact", "source", "current_status",
@@ -379,7 +389,7 @@ def _create_request(dataset, raw_values):
         return {"status": "tool_error", "error": str(error)}
 
 
-def create_return_request(order_id, item, reason, comment):
+def create_return_request(order_id, item, reason, comment=""):
     return _create_request("demo", {
         "order_id": order_id,
         "item": item,
@@ -489,6 +499,19 @@ def build_tools(
         name: dict(schema)
         for name, schema in TOOL_PROPERTIES[DATASET].items()
     }
+    if DATASET == "training":
+        properties["comment"]["description"] = (
+            "Дополнительные значимые обстоятельства, явно сообщенные "
+            "клиентом и не представленные в других полях заявки, например "
+            "участники предстоящей встречи. Не дублировать имя контактного "
+            "лица, company, contact, use_case и preferred_time. Оставить "
+            "пустым, если дополнительных обстоятельств нет."
+        )
+    if DATASET == "training" and ENABLE_LEAD_MATCHING:
+        properties["lead_id"]["description"] = (
+            "ID лида из подтвержденного программного сопоставления в "
+            "бизнес-данных. Не запрашивать у клиента."
+        )
     required = list(config["required_fields"])
 
     if results:
@@ -589,8 +612,181 @@ def find_demo_context(history, user_input):
     return _find_context("demo", history, user_input)
 
 
+def _normalize_identity(value):
+    return " ".join(str(value or "").casefold().split())
+
+
+def _contains_identity(text, value):
+    normalized_value = _normalize_identity(value)
+    return bool(re.search(
+        rf"(?<!\w){re.escape(normalized_value)}(?!\w)",
+        text,
+    ))
+
+
+def _extract_presented_name(dialog_text):
+    matches = re.findall(
+        r"(?i)(?:меня\s+зовут|(?<!\w)я|(?<!\w)это)\s+"
+        r"([a-zа-яё][a-zа-яё-]*)",
+        dialog_text,
+    )
+    ignored_words = {"из", "работаю", "представляю", "хочу"}
+    names = [name for name in matches if name.casefold() not in ignored_words]
+    return names[-1] if names else ""
+
+
+def match_training_lead(history, user_input):
+    records = load_business_records(get_case_config("training"))
+    raw_dialog_text = get_dialog_text(history, user_input)
+    dialog_text = _normalize_identity(raw_dialog_text)
+    candidate_sets = []
+    identifier_kinds = set()
+
+    lead_ids = {
+        match.upper()
+        for match in re.findall(
+            get_case_config("training")["id_pattern"],
+            dialog_text,
+        )
+    }
+    for lead_id in lead_ids:
+        identifier_kinds.add("lead_id")
+        candidate_sets.append({lead_id} if lead_id in records else set())
+
+    email_pattern = (
+        r"(?i)(?<![\w.+-])[\w.+-]+@(?:[\w-]+\.)+[a-z]{2,}(?!\w)"
+    )
+    emails = set(re.findall(email_pattern, dialog_text))
+    for email in emails:
+        identifier_kinds.add("email")
+        normalized_email = _normalize_identity(email)
+        email_candidates = {
+            lead_id
+            for lead_id, record in records.items()
+            if _normalize_identity(record.get("contact")) == normalized_email
+        }
+        candidate_sets.append(email_candidates)
+
+    identity_text = re.sub(email_pattern, " ", dialog_text)
+    matched_names = {
+        _normalize_identity(record.get("contact_name"))
+        for record in records.values()
+        if _contains_identity(identity_text, record.get("contact_name"))
+    }
+    presented_name = _extract_presented_name(raw_dialog_text)
+    names = (
+        {_normalize_identity(presented_name)}
+        if presented_name else matched_names
+    )
+    for name in names:
+        identifier_kinds.add("name")
+        candidate_sets.append({
+            lead_id
+            for lead_id, record in records.items()
+            if _normalize_identity(record.get("contact_name")) == name
+        })
+
+    matched_companies = {
+        _normalize_identity(record.get("company"))
+        for record in records.values()
+        if _contains_identity(identity_text, record.get("company"))
+    }
+    matched_companies = {
+        company
+        for company in matched_companies
+        if not any(
+            other != company and other.startswith(f"{company} ")
+            for other in matched_companies
+        )
+    }
+    for company in matched_companies:
+        identifier_kinds.add("company")
+        candidate_sets.append({
+            lead_id
+            for lead_id, record in records.items()
+            if _normalize_identity(record.get("company")) == company
+        })
+
+    if (
+        "lead_id" not in identifier_kinds
+        and not {"company", "email"}.intersection(identifier_kinds)
+    ):
+        return {
+            "status": "insufficient",
+            "message": (
+                "Задайте только вопрос: «Подскажите название вашей компании "
+                "или email»."
+            ),
+        }
+
+    candidates = set(records)
+    for candidate_set in candidate_sets:
+        candidates &= candidate_set
+
+    if len(candidates) == 1:
+        lead_id = next(iter(candidates))
+        record = records[lead_id]
+        return {
+            "status": "matched",
+            "record": record,
+            "matched_by": sorted(identifier_kinds),
+        }
+
+    if {"name", "company", "email"}.issubset(identifier_kinds):
+        clarification = (
+            "Уточните, пожалуйста, верно ли указаны имя, компания и email."
+        )
+    elif {"name", "company"}.issubset(identifier_kinds):
+        clarification = "Уточните, пожалуйста, верно ли указаны имя и компания."
+    elif {"name", "email"}.issubset(identifier_kinds):
+        clarification = "Уточните, пожалуйста, верно ли указаны имя и email."
+    elif identifier_kinds == {"company"}:
+        clarification = "Уточните, пожалуйста, название компании."
+    elif identifier_kinds == {"email"}:
+        clarification = "Уточните, пожалуйста, email."
+    else:
+        clarification = (
+            "Уточните, пожалуйста, название компании или email."
+        )
+    return {
+        "status": "ambiguous" if candidates else "conflict",
+        "message": clarification,
+    }
+
+
 def find_training_context(history, user_input):
-    return _find_context("training", history, user_input)
+    if not ENABLE_LEAD_MATCHING:
+        context = _find_context("training", history, user_input)
+        config = get_case_config("training")
+        if context not in {config["context_missing"], config["context_not_found"]}:
+            return context
+        return (
+            "Запись клиента для регистрации не определена. Автоматическое "
+            "сопоставление по имени, компании и email в этом режиме отключено. "
+            "Не запрашивайте эти сведения только ради поиска записи и не "
+            "вызывайте инструмент регистрации. Не сообщайте клиенту о CRM, "
+            "внутреннем идентификаторе или причине технического ограничения."
+        )
+
+    match = match_training_lead(history, user_input)
+    if match["status"] != "matched":
+        return (
+            "Данных для однозначного определения клиента недостаточно. "
+            f"{match['message']} Не упоминайте CRM, сопоставление или lead_id."
+        )
+
+    config = get_case_config("training")
+    record = match["record"]
+    context = "\n".join(
+        f"{field}: {record[field]}"
+        for field in config["context_fields"]
+    )
+    return (
+        f"{context}\n\n"
+        "Используйте lead_id, company и contact из этой записи без "
+        "дополнительных вопросов. Не упоминайте клиенту CRM, сопоставление "
+        "или lead_id."
+    )
 
 
 def find_business_context(history, user_input):
@@ -614,7 +810,8 @@ def build_system_prompt(
     prompt = (
         f"{AGENT_PROMPT}\n\n"
         f"{scenario_date}"
-        f"БИЗНЕС-ДАННЫЕ:\n\n{business_context}"
+        f"БИЗНЕС-ДАННЫЕ:\n\n{business_context}\n\n"
+        f"{CLIENT_RESPONSE_INSTRUCTION}"
     )
     if include_source_instruction:
         prompt = f"{prompt}\n\n{SOURCE_INSTRUCTION}"
@@ -880,6 +1077,47 @@ def validate_tool_arguments(arguments, results=None, knowledge_used=False):
     return arguments
 
 
+def validate_training_lead_match(arguments, history, user_input):
+    if DATASET != "training":
+        return arguments
+
+    if not ENABLE_LEAD_MATCHING:
+        explicit_ids = re.findall(
+            get_case_config("training")["id_pattern"],
+            get_dialog_text(history, user_input),
+        )
+        if not explicit_ids:
+            raise ValueError(
+                "Запись для регистрации не определена. Не запрашивайте у "
+                "клиента внутренний идентификатор."
+            )
+        if _normalize_identity(arguments.get("lead_id")) != _normalize_identity(
+            explicit_ids[-1]
+        ):
+            raise ValueError(
+                "Аргументы заявки не соответствуют записи, явно указанной "
+                "в диалоге."
+            )
+        return arguments
+
+    match = match_training_lead(history, user_input)
+    if match["status"] != "matched":
+        raise ValueError(
+            "Лид не сопоставлен однозначно. Уточните имя и компанию или email."
+        )
+
+    record = match["record"]
+    for field in ("lead_id", "company", "contact"):
+        if _normalize_identity(arguments.get(field)) != _normalize_identity(
+            record.get(field)
+        ):
+            raise ValueError(
+                "Аргументы заявки не соответствуют однозначно найденному лиду."
+            )
+        arguments[field] = record[field]
+    return arguments
+
+
 def make_confirmation(arguments):
     config = get_case_config()
     lines = [config["confirmation_title"]]
@@ -900,7 +1138,7 @@ def execute_tool(arguments):
             arguments["order_id"],
             arguments["item"],
             arguments["reason"],
-            arguments["comment"],
+            arguments.get("comment", ""),
         )
     if DATASET == "training":
         return create_demo_request(
@@ -1232,6 +1470,11 @@ def run_agent_turn(history, user_input, documents, frequencies):
                 arguments,
                 results,
                 knowledge_used=search_attempted,
+            )
+            validated = validate_training_lead_match(
+                validated,
+                history,
+                user_input,
             )
         except ValueError as error:
             result = {"status": "invalid_arguments", "error": str(error)}
