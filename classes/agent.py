@@ -1305,6 +1305,12 @@ def make_confirmation(arguments):
 
 
 def execute_tool(arguments):
+    if DATASET not in {"demo", "training", "own"}:
+        return {
+            "status": "tool_error",
+            "error": f"Неизвестный датасет: {DATASET}",
+        }
+
     if SIMULATE_TOOL_ERROR:
         return {"status": "tool_error"}
 
@@ -1324,12 +1330,13 @@ def execute_tool(arguments):
             arguments.get("preferred_time", ""),
             arguments.get("comment", ""),
         )
-    return create_own_request(
-        arguments["subject"],
-        arguments["description"],
-        arguments.get("reference_id", ""),
-        arguments.get("contact", ""),
-    )
+    if DATASET == "own":
+        return create_own_request(
+            arguments["subject"],
+            arguments["description"],
+            arguments.get("reference_id", ""),
+            arguments.get("contact", ""),
+        )
 
 
 def build_tool_result_answer(tool_result):
@@ -1363,13 +1370,13 @@ def build_tool_result_answer(tool_result):
             )
         if status == "already_exists":
             return (
-                "По этому лиду уже есть заявка на демо "
+                "Для этого клиента уже есть заявка на демо "
                 f"{tool_result['request_id']}. Новую заявку я не создавал."
             )
         if status == "lead_not_found":
             return (
-                "Не удалось зарегистрировать заявку: лид с таким ID не найден. "
-                "Проверьте, пожалуйста, ID лида."
+                "Не удалось зарегистрировать заявку: данные клиента не найдены. "
+                "Проверьте, пожалуйста, данные клиента."
             )
         if status == "missing_required_field":
             suffix = (
@@ -1396,10 +1403,7 @@ def build_tool_result_answer(tool_result):
         )
     if status == "missing_required_field":
         return "Не удалось зарегистрировать заявку, потому что не хватает обязательных данных."
-    return (
-        "Не удалось зарегистрировать заявку из-за технической ошибки. "
-        "Этот случай нужно передать специалисту."
-    )
+    return "Не удалось зарегистрировать заявку из-за технической ошибки."
 
 
 def _matches_phrase(text, phrases):
