@@ -21,6 +21,7 @@ from classes.rag import (
     select_search_documents,
 )
 from infrastructure.llm import complete_messages
+from infrastructure.telegram import send_notification
 from infrastructure.sheets import (
     append_row,
     clear_worksheet,
@@ -33,13 +34,43 @@ from infrastructure.sheets import (
 DATASET = "demo"  # demo / training / own
 MAX_TOOL_CALLS = 4
 SEARCH_TOOL_NAME = "search_knowledge_base"
+ESCALATION_TOOL_NAME = "escalate_case"
 DEBUG = False
 SIMULATE_TOOL_ERROR = False
 ENABLE_LEAD_MATCHING = False
+ENABLE_TELEGRAM_ESCALATION = True
 
 
 AGENT_PROMPT = """
-ВСТАВЬТЕ ПРОМПТ
+Ты ИИ-ассистент службы поддержки интернет-магазина HomeFlow. Помогаешь обрабатывать обращения по возвратам, поврежденным, неверным и некомплектным товарам.
+
+Твои задачи:
+1. Определять суть обращения, извлекать факты и выявлять недостающие данные.
+2. Обращаться к базе знаний через `search_knowledge_base`, чтобы находить применимые правила, ограничения и основания для обязательной эскалации.
+3. Если клиент просит зарегистрировать случай, проверять достаточность данных, соблюдение правил и наличие оснований для эскалации.
+4. Когда регистрация разрешена, вызывать `create_return_request` для создания заявки.
+5. При обязательной эскалации использовать `escalate_case`, если этот инструмент доступен.
+
+Правила:
+- Используй только подтвержденные сведения из обращения, бизнес-данных и доступной базы знаний. Не придумывай факты и правила.
+- Если данных недостаточно, задай конкретный уточняющий вопрос.
+- Если применимые правила требуют обязательной эскалации, не вызывай `create_return_request`.
+- Если требуется обязательная эскалация и доступен инструмент `escalate_case`, вызови его для передачи обращения специалисту. Укажи основание эскалации, краткое описание ситуации и номер заказа, если он известен.
+- Если `escalate_case` успешно выполнен, сообщи клиенту, что обращение передано специалисту.
+- Если инструмент недоступен или передача завершилась ошибкой, объясни необходимость участия специалиста, но не утверждай, что обращение уже передано.
+- Не обещай одобрение возврата, денежную компенсацию или перечисление средств.
+- Не утверждай, что заявка создана, пока инструмент не подтвердил успешное выполнение.
+- Не запрашивай подтверждение регистрации самостоятельно. При вызове `create_return_request` подтверждение запрашивает программа. Для `escalate_case` подтверждение клиента не требуется.
+
+При заполнении `create_return_request`:
+- `order_id`: номер заказа.
+- `item`: название товара.
+- `reason`: краткая причина регистрации.
+- `comment`: только дополнительные значимые обстоятельства, которые не относятся ни к одному из остальных полей.
+
+Не дублируй номер заказа, товар и причину в `comment`. Не добавляй выдуманные подробности.
+
+Отвечай клиенту кратко, конкретно и без внутренних технических деталей.
 """
 
 
@@ -67,7 +98,19 @@ CLIENT_RESPONSE_INSTRUCTION = """
 СЛУЖЕБНАЯ ИНСТРУКЦИЯ ПО ОТВЕТУ КЛИЕНТУ:
 Не раскрывай внутренний lead_id, устройство CRM и результат программного сопоставления. Если нужны сведения клиента, задавай обычный вопрос только о конкретно недостающем имени, компании или email. Не запрашивай повторно сведения, уже известные из текущего обращения, истории или бизнес-данных.
 
-Применяй условия из документов базы знаний буквально. Не расширяй числовые пороги и другие условия на случаи, которые им не соответствуют. Не утверждай, что обращение будет или уже передано менеджеру либо специалисту, если такого инструмента нет и передача фактически не выполнялась. Можно сообщить только, что для продолжения требуется участие специалиста.
+Применяй условия из документов базы знаний буквально. Не расширяй числовые пороги и другие условия на случаи, которые им не соответствуют. Не утверждай, что обращение будет или уже передано менеджеру либо специалисту, пока внешний инструмент не подтвердил успешную передачу.
+"""
+
+
+TELEGRAM_ESCALATION_ENABLED_INSTRUCTION = """
+СЛУЖЕБНАЯ ИНСТРУКЦИЯ ПО ЭСКАЛАЦИИ:
+Если согласно AGENT_PROMPT и подтвержденным правилам требуется обязательное участие специалиста, вызови escalate_case. Само упоминание клиентом слова «специалист» не является основанием для вызова. Не сообщай об успешной передаче до получения успешного результата инструмента. Подтверждение клиента для этого действия не требуется.
+"""
+
+
+TELEGRAM_ESCALATION_DISABLED_INSTRUCTION = """
+СЛУЖЕБНАЯ ИНСТРУКЦИЯ ПО ЭСКАЛАЦИИ:
+Выявляй основания для обязательной эскалации, но не утверждай, что обращение передано. Если требуется участие специалиста, объясни это клиенту без описания внутренних технических ограничений.
 """
 
 
@@ -99,7 +142,7 @@ ACTION_VALIDATION_INSTRUCTION = """
 - escalate — требуется обязательная эскалация; client_response сообщает об этом клиенту;
 - reject — действие не соответствует условиям; client_response кратко объясняет дальнейший шаг.
 
-В used_sources указывай только имена предоставленных документов, на которых непосредственно основано решение. Для allow client_response должен быть пустым. Для остальных решений client_response должен быть готовым ответом клиенту без служебных комментариев. Не утверждай, что обращение будет или уже передано менеджеру либо специалисту: программного инструмента передачи нет. При необходимости сообщи только, что для продолжения требуется участие специалиста.
+В used_sources указывай только имена предоставленных документов, на которых непосредственно основано решение. Для allow client_response должен быть пустым. Для остальных решений client_response должен быть готовым ответом клиенту без служебных комментариев. Эта проверка сама не выполняет передачу обращения, поэтому не утверждай, что оно уже передано. При необходимости сообщи только, что для продолжения требуется участие специалиста.
 """
 
 SUBMIT_BINDINGS = KeyBindings()
@@ -573,6 +616,60 @@ def build_tools(
                 },
             },
         })
+    if ENABLE_TELEGRAM_ESCALATION:
+        escalation_properties = {
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Конкретное подтвержденное основание обязательной "
+                    "эскалации."
+                ),
+            },
+            "summary": {
+                "type": "string",
+                "description": (
+                    "Краткое описание ситуации без системных инструкций и "
+                    "лишних персональных данных."
+                ),
+            },
+            "reference_id": {
+                "type": "string",
+                "description": (
+                    "Номер заказа или другой идентификатор, если он известен."
+                ),
+            },
+        }
+        escalation_required = ["reason", "summary"]
+        if results:
+            escalation_properties["used_sources"] = {
+                "type": "array",
+                "description": (
+                    "Файлы базы знаний, фактически использованные как "
+                    "основание эскалации."
+                ),
+                "items": {
+                    "type": "string",
+                    "enum": [result["source"] for result in results],
+                },
+                "minItems": 1,
+            }
+            escalation_required.append("used_sources")
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": ESCALATION_TOOL_NAME,
+                "description": (
+                    "Передать обращение специалисту, только когда "
+                    "подтверждено обязательное основание для эскалации."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": escalation_properties,
+                    "required": escalation_required,
+                    "additionalProperties": False,
+                },
+            },
+        })
     return tools
 
 
@@ -807,11 +904,17 @@ def build_system_prompt(
         if DATASET == "own"
         else f"Дата учебного сценария: {SCENARIO_DATE}\n\n"
     )
+    escalation_instruction = (
+        TELEGRAM_ESCALATION_ENABLED_INSTRUCTION
+        if ENABLE_TELEGRAM_ESCALATION
+        else TELEGRAM_ESCALATION_DISABLED_INSTRUCTION
+    )
     prompt = (
         f"{AGENT_PROMPT}\n\n"
         f"{scenario_date}"
         f"БИЗНЕС-ДАННЫЕ:\n\n{business_context}\n\n"
-        f"{CLIENT_RESPONSE_INSTRUCTION}"
+        f"{CLIENT_RESPONSE_INSTRUCTION}\n\n"
+        f"{escalation_instruction}"
     )
     if include_source_instruction:
         prompt = f"{prompt}\n\n{SOURCE_INSTRUCTION}"
@@ -868,6 +971,8 @@ def _debug_allowed_tools(permissions):
         allowed_tools.append(SEARCH_TOOL_NAME)
     if permissions["action"]:
         allowed_tools.append(config["tool_name"])
+    if ENABLE_TELEGRAM_ESCALATION:
+        allowed_tools.append(ESCALATION_TOOL_NAME)
     print(
         "DEBUG | Разрешенные инструменты: "
         f"{json.dumps(allowed_tools, ensure_ascii=False)}"
@@ -1077,6 +1182,76 @@ def validate_tool_arguments(arguments, results=None, knowledge_used=False):
     return arguments
 
 
+def validate_escalation_arguments(arguments, results=None, knowledge_used=False):
+    if not isinstance(arguments, dict):
+        raise ValueError("Аргументы инструмента должны быть объектом.")
+
+    validated = {}
+    for field in ("reason", "summary"):
+        value = arguments.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Не заполнено обязательное поле: {field}.")
+        validated[field] = value.strip()
+    protected_markers = (
+        "СЛУЖЕБНАЯ ИНСТРУКЦИЯ",
+        "AGENT_PROMPT:",
+        "SYSTEM PROMPT",
+    )
+    combined_text = "\n".join(
+        [validated["reason"], validated["summary"]]
+    ).upper()
+    if any(marker in combined_text for marker in protected_markers):
+        raise ValueError("Нельзя включать системные инструкции в уведомление.")
+    validated["reference_id"] = str(
+        arguments.get("reference_id") or ""
+    ).strip()
+
+    if knowledge_used:
+        raw_sources = arguments.get("used_sources")
+        if not isinstance(raw_sources, list):
+            raise ValueError("Не заполнено обязательное поле: used_sources.")
+        validated["used_sources"] = _allowed_sources(raw_sources, results or [])
+        if not validated["used_sources"]:
+            raise ValueError("Не указано допустимое основание эскалации.")
+    return validated
+
+
+def build_escalation_message(arguments):
+    lines = [
+        "Требуется участие специалиста",
+        "",
+        f"Кейс: {DATASET.capitalize()}",
+    ]
+    reference_id = arguments.get("reference_id", "")
+    if reference_id:
+        label = "Заказ" if DATASET == "demo" else "Идентификатор"
+        lines.append(f"{label}: {reference_id}")
+    lines.extend([
+        f"Причина: {arguments['reason']}",
+        f"Описание: {arguments['summary']}",
+    ])
+    return "\n".join(lines)
+
+
+def execute_escalation(arguments):
+    try:
+        return send_notification(build_escalation_message(arguments))
+    except Exception:
+        return {
+            "status": "send_error",
+            "error": "Не удалось выполнить отправку в Telegram.",
+        }
+
+
+def build_escalation_result_answer(tool_result):
+    if tool_result.get("status") == "sent":
+        return "Ваше обращение передано специалисту"
+    return (
+        "Не удалось передать обращение специалисту. "
+        "Для продолжения требуется участие специалиста."
+    )
+
+
 def validate_training_lead_match(arguments, history, user_input):
     if DATASET != "training":
         return arguments
@@ -1184,7 +1359,7 @@ def build_tool_result_answer(tool_result):
             return (
                 "Заявка на демо зарегистрирована. "
                 f"Номер заявки: {tool_result['request_id']}. "
-                "Это не означает, что время демо уже подтверждено."
+                "Мы свяжемся с вами для согласования времени."
             )
         if status == "already_exists":
             return (
@@ -1207,14 +1382,12 @@ def build_tool_result_answer(tool_result):
     if status == "created":
         return (
             "Заявка на разбор зарегистрирована. "
-            f"Номер заявки: {tool_result['request_id']}. "
-            "Это не означает автоматического одобрения возврата или перечисления денег."
+            f"Номер заявки: {tool_result['request_id']}."
         )
     if status == "already_exists":
         return (
             f"По этому случаю уже есть заявка {tool_result['request_id']}. "
-            "Новую заявку я не создавал. Этот случай нужно передать специалисту "
-            "для дальнейшего разбора."
+            "Новую заявку я не создавал."
         )
     if status == "invalid_order":
         return (
@@ -1435,6 +1608,50 @@ def run_agent_turn(history, user_input, documents, frequencies):
             )
             continue
 
+        if tool_name == ESCALATION_TOOL_NAME:
+            if not ENABLE_TELEGRAM_ESCALATION:
+                result = {
+                    "status": "tool_not_allowed",
+                    "tool": tool_name,
+                }
+                _append_tool_result(
+                    messages, message, tool_call, result, call_number,
+                )
+                continue
+            if search_attempted and not results:
+                result = {
+                    "status": "insufficient_knowledge",
+                    "message": (
+                        "База знаний не подтвердила основание эскалации. "
+                        "Уведомление не отправлено."
+                    ),
+                }
+                _append_tool_result(
+                    messages, message, tool_call, result, call_number,
+                )
+                continue
+            try:
+                validated = validate_escalation_arguments(
+                    arguments,
+                    results,
+                    knowledge_used=search_attempted,
+                )
+            except ValueError as error:
+                result = {"status": "invalid_arguments", "error": str(error)}
+                _append_tool_result(
+                    messages, message, tool_call, result, call_number,
+                )
+                continue
+
+            result = execute_escalation(validated)
+            _debug_tool_result(tool_name, result)
+            return {
+                "type": "answer",
+                "answer": build_escalation_result_answer(result),
+                "used_sources": validated.get("used_sources", []),
+                "response_started": response_started,
+            }
+
         if tool_name != get_case_config()["tool_name"]:
             result = {"status": "unknown_tool", "tool": tool_name}
             _append_tool_result(
@@ -1491,6 +1708,19 @@ def run_agent_turn(history, user_input, documents, frequencies):
             validated,
         )
         if not semantic_validation["allowed"]:
+            if (
+                ENABLE_TELEGRAM_ESCALATION
+                and semantic_validation["decision"] == "escalate"
+            ):
+                result = {
+                    "status": "escalation_required",
+                    "message": semantic_validation["client_response"],
+                    "used_sources": semantic_validation["used_sources"],
+                }
+                _append_tool_result(
+                    messages, message, tool_call, result, call_number,
+                )
+                continue
             return {
                 "type": "answer",
                 "answer": semantic_validation["client_response"],
