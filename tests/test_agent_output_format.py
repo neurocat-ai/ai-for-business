@@ -96,6 +96,7 @@ class AgentOutputFormatTests(unittest.TestCase):
         output = io.StringIO()
 
         with (
+            patch.object(agent, "DATASET", "demo"),
             patch.object(
                 agent,
                 "execute_tool",
