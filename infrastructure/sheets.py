@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import re
 
 import gspread
 from dotenv import load_dotenv
@@ -86,12 +87,16 @@ def initialize_worksheet(
     worksheet,
     headers,
     initial_rows,
+    optional_fields=(),
+    request_id_prefix=None,
 ):
-    current_headers = (
-        worksheet.row_values(1)
-    )
+    current_values = worksheet.get_all_values()
 
-    if not current_headers:
+    if not any(
+        str(cell).strip()
+        for row in current_values
+        for cell in row
+    ):
         write_rows(
             worksheet,
             headers,
@@ -99,10 +104,64 @@ def initialize_worksheet(
         )
         return
 
-    if current_headers[:len(headers)] != headers:
+    invalid_data_message = (
+        "Вкладка Google Sheets заполнена некорректно. "
+        "Проверьте данные или очистите вкладку и перезапустите агент."
+    )
+    current_headers = current_values[0] if current_values else []
+    if current_headers != headers:
+        raise RuntimeError(invalid_data_message)
+
+    data_rows = [
+        row
+        for row in current_values[1:]
+        if any(str(cell).strip() for cell in row)
+    ]
+    if not data_rows:
+        if initial_rows:
+            worksheet.update(initial_rows, "A2")
+        return
+
+    optional_fields = set(optional_fields)
+    required_indexes = [
+        index
+        for index, header in enumerate(headers)
+        if header not in optional_fields
+    ]
+    request_id_index = headers.index("request_id")
+    request_ids = set()
+
+    for raw_row in data_rows:
+        if (
+            len(raw_row) > len(headers)
+            and any(str(cell).strip() for cell in raw_row[len(headers):])
+        ):
+            raise RuntimeError(invalid_data_message)
+
+        row = [*raw_row[:len(headers)]]
+        row.extend([""] * (len(headers) - len(row)))
+        if any(not str(row[index]).strip() for index in required_indexes):
+            raise RuntimeError(invalid_data_message)
+
+        request_id = str(row[request_id_index]).strip()
+        if (
+            request_id in request_ids
+            or request_id_prefix
+            and not re.fullmatch(
+                rf"{re.escape(request_id_prefix)}-\d+",
+                request_id,
+            )
+        ):
+            raise RuntimeError(invalid_data_message)
+        request_ids.add(request_id)
+
+    initial_request_ids = {
+        str(row[request_id_index]).strip()
+        for row in initial_rows
+    }
+    if not initial_request_ids.issubset(request_ids):
         raise RuntimeError(
-            "Структура вкладки "
-            "не соответствует ожидаемой."
+            invalid_data_message
         )
 
 

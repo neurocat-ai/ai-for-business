@@ -277,7 +277,13 @@ def get_case_worksheet(config):
 
 def prepare_case_worksheet(config):
     worksheet = get_case_worksheet(config)
-    initialize_worksheet(worksheet, config["headers"], load_seed_rows(config))
+    initialize_worksheet(
+        worksheet,
+        config["headers"],
+        load_seed_rows(config),
+        optional_fields=config["optional_fields"],
+        request_id_prefix=config["request_prefix"],
+    )
     return worksheet
 
 
@@ -338,7 +344,7 @@ def _create_request(dataset, raw_values):
             if business_id not in load_business_records(config):
                 return {"status": config["not_found_status"]}
 
-        worksheet = prepare_case_worksheet(config)
+        worksheet = get_case_worksheet(config)
         requests = read_rows(worksheet)
         duplicate_field = config.get("duplicate_field", business_id_field)
         duplicate_value = values.get(duplicate_field, "")
@@ -1273,6 +1279,17 @@ def run_agent_turn(history, user_input, documents, frequencies):
 def main():
     clear_terminal()
     config = get_case_config()
+    print("Подключение к Google Sheets...", end="", flush=True)
+    try:
+        prepare_case_worksheet(config)
+    except Exception as error:
+        print()
+        print(
+            "Не удалось подготовить Google Sheets: "
+            f"{error}\nЗапуск Agent остановлен."
+        )
+        return
+    print("\r\033[2K", end="", flush=True)
     documents, frequencies = _load_optional_knowledge_base()
 
     history = []
