@@ -38,39 +38,11 @@ ESCALATION_TOOL_NAME = "escalate_case"
 DEBUG = False
 SIMULATE_TOOL_ERROR = False
 ENABLE_LEAD_MATCHING = False
-ENABLE_TELEGRAM_ESCALATION = True
+ENABLE_TELEGRAM_ESCALATION = False
 
 
 AGENT_PROMPT = """
-Ты ИИ-ассистент службы поддержки интернет-магазина HomeFlow. Помогаешь обрабатывать обращения по возвратам, поврежденным, неверным и некомплектным товарам.
-
-Твои задачи:
-1. Определять суть обращения, извлекать факты и выявлять недостающие данные.
-2. Обращаться к базе знаний через `search_knowledge_base`, чтобы находить применимые правила, ограничения и основания для обязательной эскалации.
-3. Если клиент просит зарегистрировать случай, проверять достаточность данных, соблюдение правил и наличие оснований для эскалации.
-4. Когда регистрация разрешена, вызывать `create_return_request` для создания заявки.
-5. При обязательной эскалации использовать `escalate_case`, если этот инструмент доступен.
-
-Правила:
-- Используй только подтвержденные сведения из обращения, бизнес-данных и доступной базы знаний. Не придумывай факты и правила.
-- Если данных недостаточно, задай конкретный уточняющий вопрос.
-- Если применимые правила требуют обязательной эскалации, не вызывай `create_return_request`.
-- Если требуется обязательная эскалация и доступен инструмент `escalate_case`, вызови его для передачи обращения специалисту. Укажи основание эскалации, краткое описание ситуации и номер заказа, если он известен.
-- Если `escalate_case` успешно выполнен, сообщи клиенту, что обращение передано специалисту.
-- Если инструмент недоступен или передача завершилась ошибкой, объясни необходимость участия специалиста, но не утверждай, что обращение уже передано.
-- Не обещай одобрение возврата, денежную компенсацию или перечисление средств.
-- Не утверждай, что заявка создана, пока инструмент не подтвердил успешное выполнение.
-- Не запрашивай подтверждение регистрации самостоятельно. При вызове `create_return_request` подтверждение запрашивает программа. Для `escalate_case` подтверждение клиента не требуется.
-
-При заполнении `create_return_request`:
-- `order_id`: номер заказа.
-- `item`: название товара.
-- `reason`: краткая причина регистрации.
-- `comment`: только дополнительные значимые обстоятельства, которые не относятся ни к одному из остальных полей.
-
-Не дублируй номер заказа, товар и причину в `comment`. Не добавляй выдуманные подробности.
-
-Отвечай клиенту кратко, конкретно и без внутренних технических деталей.
+ВСТАВЬТЕ ПРОМПТ
 """
 
 
@@ -80,11 +52,13 @@ TOOL_PERMISSION_INSTRUCTION = """
 
 - search=true только при наличии в AGENT_PROMPT явной инструкции обращаться к базе знаний.
 - action=true только при наличии в AGENT_PROMPT явной инструкции выполнять внешнее действие с помощью соответствующего инструмента.
+- escalation=true только при наличии в AGENT_PROMPT явной инструкции передавать обращение специалисту с помощью инструмента.
+- action_knowledge="required", если AGENT_PROMPT требует или может требовать проверку документов перед действием. Верни "not_required" только если из AGENT_PROMPT однозначно следует, что действие разрешено проверять по обращению и бизнес-данным без базы знаний. При неоднозначности верни "required".
 
 Не учитывай текущее обращение, историю диалога и то, выполнены ли условия вызова инструмента: они определяют необходимость и момент вызова, но не доступность инструмента. Само наличие инструмента или описание его возможностей не являются разрешением. Если явной инструкции в AGENT_PROMPT нет, верни false для соответствующей категории.
 
 Верни только JSON-объект без markdown:
-{"search": true, "action": false}
+{"search": true, "action": false, "escalation": false, "action_knowledge": "required"}
 """
 
 
@@ -104,7 +78,7 @@ CLIENT_RESPONSE_INSTRUCTION = """
 
 TELEGRAM_ESCALATION_ENABLED_INSTRUCTION = """
 СЛУЖЕБНАЯ ИНСТРУКЦИЯ ПО ЭСКАЛАЦИИ:
-Если согласно AGENT_PROMPT и подтвержденным правилам требуется обязательное участие специалиста, вызови escalate_case. Само упоминание клиентом слова «специалист» не является основанием для вызова. Не сообщай об успешной передаче до получения успешного результата инструмента. Подтверждение клиента для этого действия не требуется.
+Если согласно AGENT_PROMPT и подтвержденным правилам требуется обязательное участие специалиста, вызови escalate_case. Явная безусловная просьба клиента передать обращение человеку также может быть основанием. Само упоминание специалиста, отрицание такой просьбы или условная формулировка основанием не являются. Не сообщай об успешной передаче до получения успешного результата инструмента. Подтверждение клиента для этого действия не требуется.
 """
 
 
@@ -116,7 +90,7 @@ TELEGRAM_ESCALATION_DISABLED_INSTRUCTION = """
 
 ACTION_VALIDATION_INSTRUCTION = """
 СЛУЖЕБНАЯ ИНСТРУКЦИЯ ПО ПРОВЕРКЕ ДЕЙСТВИЯ:
-Проверь готовность предполагаемого действия к переходу на этап программного подтверждения, а не к фактическому выполнению. Используй исключительно AGENT_PROMPT, историю диалога, текущее сообщение, бизнес-данные и предоставленные документы базы знаний.
+Проверь фактическое основание предполагаемого действия. Используй исключительно AGENT_PROMPT, историю диалога, текущее сообщение, бизнес-данные и предоставленные документы базы знаний.
 
 Проверь одновременно:
 - достаточно ли подтвержденных данных для действия;
@@ -124,16 +98,24 @@ ACTION_VALIDATION_INSTRUCTION = """
 - нет ли оснований, при которых AGENT_PROMPT или бизнес-правила требуют обязательной эскалации вместо действия;
 - соответствуют ли аргументы действия известным данным.
 
-Не придумывай правила и факты. Отсутствие документов базы знаний само по себе не запрещает действие, если AGENT_PROMPT не требует проверки по ним.
+Не придумывай правила и факты. Если для действия обязательна база знаний, разрешай его только на основании действительно предоставленного документа. Не подменяй отсутствующий документ обращением или бизнес-данными.
 Применяй каждое условие из документов буквально: числовой порог считается выполненным только при фактическом соответствии указанному сравнению. Не заменяй точное условие более широким предположением.
 
-На этом этапе подтверждение клиента еще не запрашивалось. Его отсутствие не является основанием для отказа или уточнения. Если данных достаточно, бизнес-условия соблюдены и действие разрешено, верни decision: "allow". Не запрашивай подтверждение самостоятельно: запрос подтверждения, обработка согласия или отказа и фактическое выполнение действия осуществляются Python после этой проверки.
+Для регистрации на этом этапе подтверждение клиента еще не запрашивалось. Его отсутствие не является основанием для отказа или уточнения. Не запрашивай подтверждение самостоятельно.
+
+Для decision="allow" укажи ровно одно основание:
+- knowledge_rule — найденный документ действительно содержит применимое правило, требующее или разрешающее действие; укажи его в used_sources;
+- confirmed_data — действие не требует базы знаний и подтверждается обращением или бизнес-данными; приведи в evidence_quotes дословные фрагменты этих данных;
+- client_request — только для эскалации при явной безусловной просьбе клиента передать обращение человеку; приведи дословную просьбу в client_request_quote. Учитывай смысл, отрицания и условные формулировки: одной совпавшей фразы недостаточно.
 
 Верни только JSON-объект без markdown:
 {
   "decision": "allow",
+  "basis": "knowledge_rule",
   "client_response": "",
-  "used_sources": []
+  "used_sources": ["rules.md"],
+  "evidence_quotes": [],
+  "client_request_quote": ""
 }
 
 Допустимые значения decision:
@@ -142,7 +124,7 @@ ACTION_VALIDATION_INSTRUCTION = """
 - escalate — требуется обязательная эскалация; client_response сообщает об этом клиенту;
 - reject — действие не соответствует условиям; client_response кратко объясняет дальнейший шаг.
 
-В used_sources указывай только имена предоставленных документов, на которых непосредственно основано решение. Для allow client_response должен быть пустым. Для остальных решений client_response должен быть готовым ответом клиенту без служебных комментариев. Эта проверка сама не выполняет передачу обращения, поэтому не утверждай, что оно уже передано. При необходимости сообщи только, что для продолжения требуется участие специалиста.
+В used_sources указывай только имена предоставленных документов, содержание которых непосредственно подтверждает решение. Цитаты должны дословно присутствовать в переданном контексте. Для allow client_response должен быть пустым. Для остальных решений client_response должен быть готовым ответом клиенту без служебных комментариев. Эта проверка сама не выполняет передачу обращения, поэтому не утверждай, что оно уже передано. При необходимости сообщи только, что для продолжения требуется участие специалиста.
 """
 
 SUBMIT_BINDINGS = KeyBindings()
@@ -534,6 +516,7 @@ def build_tools(
     knowledge_available=False,
     search_allowed=True,
     action_allowed=True,
+    escalation_allowed=False,
 ):
     config = get_case_config()
     results = results or []
@@ -567,7 +550,6 @@ def build_tools(
             },
             "minItems": 1,
         }
-        required.append("used_sources")
 
     tools = []
     if action_allowed:
@@ -616,7 +598,7 @@ def build_tools(
                 },
             },
         })
-    if ENABLE_TELEGRAM_ESCALATION:
+    if ENABLE_TELEGRAM_ESCALATION and escalation_allowed:
         escalation_properties = {
             "reason": {
                 "type": "string",
@@ -653,7 +635,6 @@ def build_tools(
                 },
                 "minItems": 1,
             }
-            escalation_required.append("used_sources")
         tools.append({
             "type": "function",
             "function": {
@@ -936,9 +917,14 @@ def parse_tool_permissions(content):
 
     if not isinstance(decision, dict):
         decision = {}
+    action_knowledge = decision.get("action_knowledge")
+    if action_knowledge not in {"required", "not_required"}:
+        action_knowledge = "required"
     return {
         "search": decision.get("search") is True,
         "action": decision.get("action") is True,
+        "escalation": decision.get("escalation") is True,
+        "action_requires_knowledge": action_knowledge == "required",
     }
 
 
@@ -953,7 +939,9 @@ def decide_tool_permissions():
                 f"{TOOL_PERMISSION_INSTRUCTION}\n\n"
                 "Категория search: поиск в базе знаний.\n"
                 "Категория action: "
-                f"{config['tool_description']}"
+                f"{config['tool_description']}\n"
+                "Категория escalation: передача обращения специалисту "
+                "через Telegram."
             ),
         },
     ]
@@ -971,7 +959,7 @@ def _debug_allowed_tools(permissions):
         allowed_tools.append(SEARCH_TOOL_NAME)
     if permissions["action"]:
         allowed_tools.append(config["tool_name"])
-    if ENABLE_TELEGRAM_ESCALATION:
+    if ENABLE_TELEGRAM_ESCALATION and permissions["escalation"]:
         allowed_tools.append(ESCALATION_TOOL_NAME)
     print(
         "DEBUG | Разрешенные инструменты: "
@@ -1024,7 +1012,28 @@ def _debug_search_scope(search_result):
     )
 
 
-def parse_action_validation(content, results):
+def _verified_quotes(raw_quotes, evidence_text):
+    if not isinstance(raw_quotes, list):
+        return []
+    normalized_evidence = _normalize_identity(evidence_text)
+    verified = []
+    for quote in raw_quotes:
+        if not isinstance(quote, str) or not quote.strip():
+            continue
+        normalized_quote = _normalize_identity(quote)
+        if normalized_quote in normalized_evidence and quote.strip() not in verified:
+            verified.append(quote.strip())
+    return verified
+
+
+def parse_action_validation(
+    content,
+    results,
+    action_kind="registration",
+    evidence_text="",
+    client_text="",
+    knowledge_required=False,
+):
     content = (content or "").strip()
     try:
         validation = json.loads(content)
@@ -1045,14 +1054,41 @@ def parse_action_validation(content, results):
         raw_sources if isinstance(raw_sources, list) else [],
         results,
     )
+    basis = validation.get("basis")
+    evidence_quotes = _verified_quotes(
+        validation.get("evidence_quotes"),
+        evidence_text,
+    )
+    client_quotes = _verified_quotes(
+        [validation.get("client_request_quote")],
+        client_text,
+    )
+    client_request_quote = client_quotes[0] if client_quotes else ""
 
     if decision == "allow":
-        return {
-            "allowed": True,
-            "decision": decision,
-            "client_response": "",
-            "used_sources": used_sources,
-        }
+        allowed = (
+            (basis == "knowledge_rule" and bool(used_sources))
+            or (
+                basis == "confirmed_data"
+                and not knowledge_required
+                and bool(evidence_quotes)
+            )
+            or (
+                action_kind == "escalation"
+                and basis == "client_request"
+                and bool(client_request_quote)
+            )
+        )
+        if allowed:
+            return {
+                "allowed": True,
+                "decision": decision,
+                "basis": basis,
+                "client_response": "",
+                "used_sources": used_sources if basis == "knowledge_rule" else [],
+                "evidence_quotes": evidence_quotes,
+                "client_request_quote": client_request_quote,
+            }
 
     if (
         decision in {"clarify", "escalate", "reject"}
@@ -1083,8 +1119,20 @@ def validate_action_semantics(
     business_context,
     results,
     arguments,
+    action_kind="registration",
+    knowledge_required=False,
 ):
     config = get_case_config()
+    action_name = (
+        ESCALATION_TOOL_NAME
+        if action_kind == "escalation"
+        else config["tool_name"]
+    )
+    action_description = (
+        "Передать обращение специалисту через Telegram."
+        if action_kind == "escalation"
+        else config["tool_description"]
+    )
     scenario_date = (
         ""
         if DATASET == "own"
@@ -1104,8 +1152,11 @@ def validate_action_semantics(
                 "AGENT_PROMPT:\n"
                 f"{AGENT_PROMPT}\n\n"
                 f"{ACTION_VALIDATION_INSTRUCTION}\n\n"
+                f"ТИП ДЕЙСТВИЯ: {action_kind}\n"
+                "БАЗА ЗНАНИЙ ОБЯЗАТЕЛЬНА: "
+                f"{'да' if knowledge_required else 'нет'}\n\n"
                 "ПРЕДПОЛАГАЕМОЕ ДЕЙСТВИЕ:\n"
-                f"{config['tool_name']}: {config['tool_description']}\n\n"
+                f"{action_name}: {action_description}\n\n"
                 f"{scenario_date}"
                 "БИЗНЕС-ДАННЫЕ:\n"
                 f"{business_context}\n\n"
@@ -1120,7 +1171,15 @@ def validate_action_semantics(
     ]
     response = complete_messages(messages)
     content = response.choices[0].message.content
-    validation = parse_action_validation(content, results)
+    dialog_text = get_dialog_text(history, user_input)
+    validation = parse_action_validation(
+        content,
+        results,
+        action_kind=action_kind,
+        evidence_text=f"{dialog_text}\n{business_context}",
+        client_text=dialog_text,
+        knowledge_required=knowledge_required,
+    )
     _debug_action_validation(validation)
     return validation
 
@@ -1538,7 +1597,6 @@ def run_agent_turn(history, user_input, documents, frequencies):
         {"role": "user", "content": user_input},
     ]
     knowledge_available = bool(documents)
-    search_attempted = False
     response_started = False
     results = []
 
@@ -1550,6 +1608,10 @@ def run_agent_turn(history, user_input, documents, frequencies):
                 knowledge_available,
                 search_allowed=permissions["search"],
                 action_allowed=permissions["action"],
+                escalation_allowed=(
+                    ENABLE_TELEGRAM_ESCALATION
+                    and permissions["escalation"]
+                ),
             ),
         )
         message = response.choices[0].message
@@ -1609,7 +1671,6 @@ def run_agent_turn(history, user_input, documents, frequencies):
                 )
                 continue
 
-            search_attempted = True
             search_result = search_knowledge_base(
                 arguments.get("query", ""),
                 documents,
@@ -1624,22 +1685,13 @@ def run_agent_turn(history, user_input, documents, frequencies):
             continue
 
         if tool_name == ESCALATION_TOOL_NAME:
-            if not ENABLE_TELEGRAM_ESCALATION:
+            if not (
+                ENABLE_TELEGRAM_ESCALATION
+                and permissions["escalation"]
+            ):
                 result = {
                     "status": "tool_not_allowed",
                     "tool": tool_name,
-                }
-                _append_tool_result(
-                    messages, message, tool_call, result, call_number,
-                )
-                continue
-            if search_attempted and not results:
-                result = {
-                    "status": "insufficient_knowledge",
-                    "message": (
-                        "База знаний не подтвердила основание эскалации. "
-                        "Уведомление не отправлено."
-                    ),
                 }
                 _append_tool_result(
                     messages, message, tool_call, result, call_number,
@@ -1649,7 +1701,7 @@ def run_agent_turn(history, user_input, documents, frequencies):
                 validated = validate_escalation_arguments(
                     arguments,
                     results,
-                    knowledge_used=search_attempted,
+                    knowledge_used=False,
                 )
             except ValueError as error:
                 result = {"status": "invalid_arguments", "error": str(error)}
@@ -1658,6 +1710,32 @@ def run_agent_turn(history, user_input, documents, frequencies):
                 )
                 continue
 
+            try:
+                semantic_validation = validate_action_semantics(
+                    history,
+                    user_input,
+                    business_context,
+                    results,
+                    validated,
+                    action_kind="escalation",
+                    knowledge_required=False,
+                )
+            except Exception:
+                semantic_validation = {"allowed": False}
+            if not semantic_validation["allowed"]:
+                result = {
+                    "status": "unconfirmed_basis",
+                    "message": (
+                        "Основание эскалации не подтверждено. "
+                        "Уведомление не отправлено."
+                    ),
+                }
+                _append_tool_result(
+                    messages, message, tool_call, result, call_number,
+                )
+                continue
+
+            validated["used_sources"] = semantic_validation["used_sources"]
             result = execute_escalation(validated)
             _debug_tool_result(tool_name, result)
             return {
@@ -1684,11 +1762,13 @@ def run_agent_turn(history, user_input, documents, frequencies):
             )
             continue
 
-        if search_attempted and not results:
+        knowledge_required = permissions["action_requires_knowledge"]
+        if knowledge_required and not results:
             result = {
                 "status": "insufficient_knowledge",
                 "message": (
-                    "База знаний не дала основания для выполнения действия. "
+                    "Обязательная проверка базы знаний не дала основания "
+                    "для выполнения действия. "
                     "Действие не выполнено."
                 ),
             }
@@ -1701,7 +1781,7 @@ def run_agent_turn(history, user_input, documents, frequencies):
             validated = validate_tool_arguments(
                 arguments,
                 results,
-                knowledge_used=search_attempted,
+                knowledge_used=False,
             )
             validated = validate_training_lead_match(
                 validated,
@@ -1721,10 +1801,13 @@ def run_agent_turn(history, user_input, documents, frequencies):
             business_context,
             results,
             validated,
+            action_kind="registration",
+            knowledge_required=knowledge_required,
         )
         if not semantic_validation["allowed"]:
             if (
                 ENABLE_TELEGRAM_ESCALATION
+                and permissions["escalation"]
                 and semantic_validation["decision"] == "escalate"
             ):
                 result = {
@@ -1743,6 +1826,9 @@ def run_agent_turn(history, user_input, documents, frequencies):
                 "response_started": response_started,
             }
 
+        validated.pop("used_sources", None)
+        if semantic_validation["used_sources"]:
+            validated["used_sources"] = semantic_validation["used_sources"]
         _debug_tool_result(tool_name, {
             "status": "awaiting_confirmation",
             "arguments": validated,
